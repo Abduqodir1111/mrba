@@ -1,0 +1,44 @@
+name: Checks
+on: [push, pull_request]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18.3-alpine
+        env:
+          POSTGRES_DB: mrba_test
+          POSTGRES_USER: mrba
+          POSTGRES_PASSWORD: ci-only-local-password
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U mrba -d mrba_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://mrba:ci-only-local-password@127.0.0.1:5432/mrba_test
+      JWT_SECRET: ci-only-ephemeral-secret-at-least-32-characters
+      RECOVERY_EPOCH: ci-test-epoch
+      OWNER_LOGIN: owner
+      OWNER_PASSWORD: ci-only-owner-password-24-chars
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: node scripts/setup.mjs
+      - run: npm ci
+      - run: npm run db:generate
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run test:integration
+      - run: npm audit --audit-level=high
+      - run: docker build -f deploy/Dockerfile --target runtime -t mrba-api:local .
+      - run: docker build -f deploy/Dockerfile --target migrate -t mrba-migrate:local .
+      - run: node scripts/verify-production.mjs
+      - run: node scripts/verify-backup.mjs
+        env:
+          MRBA_TEST_DB_CONTAINER: ${{ job.services.postgres.id }}
+          MRBA_TEST_DB_USER: mrba

@@ -1,0 +1,54 @@
+# Private preparation while DNS/TLS and data migration are pending.
+name: mrba-production
+services:
+  postgres:
+    image: postgres:18.3-alpine@sha256:54451ecb8ab38c24c3ec123f2fd501303a3a1856a5c66e98cecf2460d5e1e9d7
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: mrba
+      POSTGRES_USER: mrba_owner
+      POSTGRES_PASSWORD: ${MIGRATION_DB_PASSWORD:?Required}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?Required}
+    volumes:
+      - postgres_data:/var/lib/postgresql
+      - ./postgres/init.sh:/docker-entrypoint-initdb.d/10-app-role.sh:ro
+    networks: [database]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U mrba_owner -d mrba']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+  migrate:
+    image: mrba-migrate:20260922-release
+    environment:
+      DATABASE_URL: postgresql://mrba_owner:${MIGRATION_DB_PASSWORD}@postgres:5432/mrba
+    depends_on:
+      postgres: {condition: service_healthy}
+    networks: [database]
+    restart: "no"
+  api:
+    image: mrba-api:20260922-release
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3000
+      DATABASE_URL: postgresql://mrba_app:${APP_DB_PASSWORD}@postgres:5432/mrba
+      JWT_SECRET: ${JWT_SECRET:?Required}
+      RECOVERY_EPOCH: ${RECOVERY_EPOCH:?Required}
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    ports: ["127.0.0.1:3107:3000"]
+    networks: [database, frontend]
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "5"}
+networks:
+  database: {internal: true}
+  frontend:
+volumes:
+  postgres_data:

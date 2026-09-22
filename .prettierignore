@@ -1,0 +1,9 @@
+node_modules
+**/dist
+**/ios
+**/android
+**/.expo
+.env*
+package-lock.json
+artifacts
+docs/ARCHITECTURE.ru.md

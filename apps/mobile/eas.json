@@ -1,0 +1,33 @@
+{
+  "cli": {
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "environment": "development"
+    },
+    "production": {
+      "distribution": "store",
+      "developmentClient": false,
+      "environment": "production",
+      "autoIncrement": true,
+      "env": {
+        "MRBA_RELEASE": "1",
+        "EXPO_PUBLIC_API_URL": "https://api.mrba.uz/api/v1"
+      },
+      "ios": {
+        "buildConfiguration": "Release"
+      }
+    }
+  },
+  "submit": {
+    "production": {
+      "ios": {
+        "ascAppId": "6814782747",
+        "appleTeamId": "JJTAN54K5Z"
+      }
+    }
+  }
+}

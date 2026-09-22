@@ -1,0 +1,18 @@
+import {spawnSync} from 'node:child_process';
+import {randomBytes,randomUUID} from 'node:crypto';
+import {resolve} from 'node:path';
+const name='mrba-role-check-'+randomUUID().slice(0,8);
+const ownerPassword=randomBytes(24).toString('hex'),appPassword=randomBytes(24).toString('hex');
+function docker(args,env={}){const r=spawnSync('docker',args,{env:{...process.env,...env},encoding:'utf8'});if(r.status!==0)throw Error(r.stderr||r.stdout);return r.stdout;}
+let started=false;
+try{
+ docker(['run','--detach','--name',name,'--env','POSTGRES_USER=mrba_owner','--env','POSTGRES_DB=mrba','--env','POSTGRES_PASSWORD','--env','APP_DB_PASSWORD','--mount',`type=bind,src=${resolve('deploy/postgres/init.sh')},dst=/docker-entrypoint-initdb.d/10-role.sh,readonly`,'postgres:18.3-alpine'],{POSTGRES_PASSWORD:ownerPassword,APP_DB_PASSWORD:appPassword});started=true;
+ let ready=false;
+ for(let i=0;i<40;i++){const r=spawnSync('docker',['exec',name,'pg_isready','-h','127.0.0.1','-U','mrba_owner','-d','mrba'],{encoding:'utf8'});if(!r.status){ready=true;break;}await new Promise(r=>setTimeout(r,500));}
+ if(!ready)throw Error('Isolated database failed to become ready');
+ const ownerUrl=`postgresql://mrba_owner:${ownerPassword}@127.0.0.1:5432/mrba`;
+ docker(['run','--rm','--network','container:'+name,'--env','DATABASE_URL','mrba-migrate:local'],{DATABASE_URL:ownerUrl});
+ docker(['run','--rm','--network','container:'+name,'--env','DATABASE_URL','--env','OWNER_LOGIN=verify-owner','--env','OWNER_PASSWORD','mrba-migrate:local','node','dist/seed.js'],{DATABASE_URL:ownerUrl,OWNER_PASSWORD:randomBytes(24).toString('hex')});
+ const code=`const {createApp}=require('./apps/api/dist/app');const {Database}=require('./apps/api/dist/db');(async()=>{const app=await createApp();await app.init();const db=app.get(Database);if(await db.user.count()!==1)throw Error('Seed not readable');const {OperationsService}=require('./apps/api/dist/operations');const ops=app.get(OperationsService);const actor=await db.user.findFirstOrThrow();const uuid=require('crypto').randomUUID;const epoch=process.env.RECOVERY_EPOCH;const material=await ops.command(actor.id,uuid(),epoch,'VERIFY_MATERIAL',{},async tx=>{const m=await tx.material.create({data:{name:'Role verification'}});await tx.item.create({data:{id:m.id,name:m.name,kind:'MATERIAL'}});return {id:m.id};});const supplier=await ops.command(actor.id,uuid(),epoch,'VERIFY_SUPPLIER',{},async tx=>{const s=await tx.supplier.create({data:{name:'Role verification'}});return {id:s.id};});await ops.purchase(actor.id,uuid(),epoch,{supplierId:supplier.id,currency:'UZS',lines:[{materialId:material.id,quantity:'1',unit:'kg',unitPricePerKg:'1'}]});if(await db.stockMovement.count()!==1)throw Error('Runtime write failed');let denied=false;try{await db.$executeRawUnsafe('CREATE TABLE unexpected_ddl (id int)');}catch{denied=true;}if(!denied)throw Error('Application role has DDL permissions');denied=false;try{await db.$queryRawUnsafe('SELECT * FROM _prisma_migrations');}catch{denied=true;}if(!denied)throw Error('Application role can read migration credentials metadata');await app.close();console.log('PASS: migration, seed, restricted runtime startup, atomic purchase and denied DDL/migration-table access');})().catch(e=>{console.error(e.message);process.exit(1)})`;
+ const out=docker(['run','--rm','--network','container:'+name,'--env','DATABASE_URL','--env','JWT_SECRET','--env','RECOVERY_EPOCH','mrba-api:local','node','-e',code],{DATABASE_URL:`postgresql://mrba_app:${appPassword}@127.0.0.1:5432/mrba`,JWT_SECRET:randomBytes(32).toString('hex'),RECOVERY_EPOCH:randomUUID()});console.log(out.split('\n').filter(l=>l.startsWith('PASS:')).join('\n'));
+}finally{if(started)docker(['rm','--force','--volumes',name]);}

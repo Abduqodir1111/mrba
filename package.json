@@ -1,0 +1,37 @@
+{
+  "name": "mrba",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "build": "npm run build -w @mrba/domain && npm run build -w @mrba/api",
+    "typecheck": "npm run build && npm run typecheck -w @mrba/mobile",
+    "test": "npm run build && node --test packages/domain/dist/*.test.js",
+    "test:integration": "node scripts/integration.mjs",
+    "dev:api": "npm run dev -w @mrba/api",
+    "dev:mobile": "node scripts/mobile.mjs",
+    "db:generate": "npm run db:generate -w @mrba/api",
+    "db:migrate": "npm run db:migrate -w @mrba/api",
+    "db:seed": "npm run db:seed -w @mrba/api",
+    "release:ios:check": "node scripts/ios-release-check.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "prettier": "^3.9.8",
+    "typescript": "5.9.3"
+  },
+  "overrides": {
+    "multer": "^2.3.0",
+    "mysql2": "^3.24.0",
+    "deepmerge-ts": "^8.0.0",
+    "xcode": {
+      "uuid": "^11.1.1"
+    }
+  }
+}

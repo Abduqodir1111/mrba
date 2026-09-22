@@ -1,0 +1,44 @@
+{
+  "expo": {
+    "name": "MRBA",
+    "slug": "mrba",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/mrba-icon.png",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "uz.mrba.factory",
+      "infoPlist": {
+        "NSAppTransportSecurity": {
+          "NSAllowsLocalNetworking": true
+        },
+        "ITSAppUsesNonExemptEncryption": false
+      },
+      "buildNumber": "1"
+    },
+    "android": {
+      "predictiveBackGestureEnabled": false,
+      "package": "uz.mrba.factory",
+      "icon": "./assets/mrba-icon.png"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-secure-store",
+        {
+          "faceIDPermission": false
+        }
+      ]
+    ],
+    "scheme": "mrba",
+    "extra": {
+      "eas": {
+        "projectId": "8a2d4089-ace8-483b-9249-0de13be4f60d"
+      }
+    },
+    "owner": "abduqodir1111"
+  }
+}

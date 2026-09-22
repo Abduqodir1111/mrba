@@ -1,0 +1,457 @@
+generator client {
+  provider = "prisma-client-js"
+}
+datasource db {
+  provider = "postgresql"
+}
+enum Currency {
+  UZS
+  USD
+}
+model Site {
+  id String @id @default(uuid()) @db.Uuid
+  name String
+  city String
+  region String
+  timezone String @default("Asia/Tashkent")
+  createdAt DateTime @default(now()) @db.Timestamptz
+  warehouses Warehouse[]
+  equipment Equipment[]
+  shifts ShiftTemplate[]
+  receipts PurchaseReceipt[]
+}
+model Warehouse {
+  id String @id @default(uuid()) @db.Uuid
+  siteId String @db.Uuid
+  site Site @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  name String
+  locations StockLocation[]
+  @@unique([siteId, name])
+}
+model StockLocation {
+  reservations StockReservation[]
+  allocations ShipmentAllocation[]
+  id String @id @default(uuid()) @db.Uuid
+  warehouseId String @db.Uuid
+  warehouse Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+  name String
+  balances InventoryBalance[]
+  movements StockMovement[]
+  kind String @default("STORAGE")
+  batch ProductionBatch?
+  @@unique([warehouseId, name])
+}
+model ShiftTemplate {
+  id String @id @default(uuid()) @db.Uuid
+  siteId String @db.Uuid
+  site Site @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  code String
+  name String
+  startHour Int
+  endHour Int
+  endDayOffset Int
+  @@unique([siteId, code])
+}
+model User {
+  version Int @default(1)
+  id String @id @default(uuid()) @db.Uuid
+  login String @unique
+  name String
+  passwordHash String
+  isActive Boolean @default(true)
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt @db.Timestamptz
+  roles UserRole[]
+  sessions RefreshSession[]
+  receipts CommandReceipt[]
+  audit AuditLog[]
+  purchases PurchaseReceipt[]
+  drafts CommandIntent[]
+}
+model Role {
+  id String @id @default(uuid()) @db.Uuid
+  code String @unique
+  name String
+  users UserRole[]
+  permissions RolePermission[]
+}
+model Permission {
+  code String @id
+  roles RolePermission[]
+}
+model UserRole {
+  userId String @db.Uuid
+  roleId String @db.Uuid
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Restrict)
+  @@id([userId, roleId])
+}
+model RolePermission {
+  roleId String @db.Uuid
+  permissionCode String
+  role Role @relation(fields: [roleId], references: [id], onDelete: Restrict)
+  permission Permission @relation(fields: [permissionCode], references: [code], onDelete: Restrict)
+  @@id([roleId, permissionCode])
+}
+model RefreshSession {
+  id String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  deviceId String @db.Uuid
+  tokenHash String @unique
+  familyId String @db.Uuid
+  expiresAt DateTime @db.Timestamptz
+  revokedAt DateTime? @db.Timestamptz
+  createdAt DateTime @default(now()) @db.Timestamptz
+  @@index([userId])
+  @@index([familyId])
+}
+model Material {
+  category String?
+  version Int @default(1)
+  id String @id @default(uuid()) @db.Uuid
+  name String @unique
+  isActive Boolean @default(true)
+  createdAt DateTime @default(now()) @db.Timestamptz
+  lines PurchaseLine[]
+}
+model Supplier {
+  notes String?
+  version Int @default(1)
+  id String @id @default(uuid()) @db.Uuid
+  name String @unique
+  phone String?
+  isActive Boolean @default(true)
+  createdAt DateTime @default(now()) @db.Timestamptz
+  receipts PurchaseReceipt[]
+  documents BusinessDocument[]
+}
+model PurchaseReceipt {
+  id String @id @db.Uuid
+  siteId String @db.Uuid
+  site Site @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  supplierId String? @db.Uuid
+  supplier Supplier? @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  createdBy String @db.Uuid
+  user User @relation(fields: [createdBy], references: [id], onDelete: Restrict)
+  currency Currency
+  postedAt DateTime @default(now()) @db.Timestamptz
+  notes String?
+  lines PurchaseLine[]
+}
+model PurchaseLine {
+  id String @id @default(uuid()) @db.Uuid
+  receiptId String @db.Uuid
+  receipt PurchaseReceipt @relation(fields: [receiptId], references: [id], onDelete: Restrict)
+  materialId String @db.Uuid
+  material Material @relation(fields: [materialId], references: [id], onDelete: Restrict)
+  quantityKg Decimal @db.Decimal(20,3)
+  unitPricePerKg Decimal @db.Decimal(20,6)
+  amount Decimal @db.Decimal(35,9)
+  lot PurchaseLot?
+  @@index([receiptId])
+  @@index([materialId])
+}
+model PurchaseLot {
+  id String @id @default(uuid()) @db.Uuid
+  lineId String @unique @db.Uuid
+  line PurchaseLine @relation(fields: [lineId], references: [id], onDelete: Restrict)
+  stockLot StockLot?
+}
+model InventoryBalance {
+  lotId String @db.Uuid
+  locationId String @db.Uuid
+  location StockLocation @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  lot StockLot @relation(fields: [lotId], references: [id], onDelete: Restrict)
+  onHandKg Decimal @db.Decimal(20,3)
+  reservedKg Decimal @default(0) @db.Decimal(20,3)
+  version Int @default(1)
+  @@id([lotId, locationId])
+}
+model StockMovement {
+  documentId String @db.Uuid
+  document BusinessDocument @relation(fields: [documentId], references: [id], onDelete: Restrict)
+  locationId String @db.Uuid
+  location StockLocation @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  id String @id @default(uuid()) @db.Uuid
+  lotId String @db.Uuid
+  lot StockLot @relation(fields: [lotId], references: [id], onDelete: Restrict)
+  commandId String @db.Uuid
+  command CommandReceipt @relation(fields: [commandId], references: [commandId], onDelete: Restrict)
+  signedQuantityKg Decimal @db.Decimal(20,3)
+  type String
+  postedAt DateTime @default(now()) @db.Timestamptz
+  @@unique([commandId, lotId, locationId])
+  @@index([lotId, postedAt])
+}
+model CommandReceipt {
+  commandId String @id @db.Uuid
+  actorId String @db.Uuid
+  actor User @relation(fields: [actorId], references: [id], onDelete: Restrict)
+  type String
+  payloadHash String
+  result Json
+  recordedAt DateTime @default(now()) @db.Timestamptz
+  movements StockMovement[]
+  audit AuditLog[]
+  documents BusinessDocument[]
+}
+model AuditLog {
+  id String @id @default(uuid()) @db.Uuid
+  actorId String @db.Uuid
+  actor User @relation(fields: [actorId], references: [id], onDelete: Restrict)
+  commandId String @db.Uuid
+  command CommandReceipt @relation(fields: [commandId], references: [commandId], onDelete: Restrict)
+  action String
+  entityId String @db.Uuid
+  snapshot Json
+  recordedAt DateTime @default(now()) @db.Timestamptz
+  @@index([actorId, recordedAt])
+}
+
+model Item {
+  id String @id @default(uuid()) @db.Uuid
+  name String
+  kind String
+  wasteDisposition String?
+  isActive Boolean @default(true)
+  version Int @default(1)
+  createdAt DateTime @default(now()) @db.Timestamptz
+  lots StockLot[]
+  contractLines ContractLine[]
+  shipmentLines ShipmentLine[]
+  @@unique([name, kind])
+}
+model StockLot {
+  isCarryover Boolean @default(false)
+  stockKind String?
+  id String @id @default(uuid()) @db.Uuid
+  itemId String @db.Uuid
+  item Item @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  purchaseLotId String? @unique @db.Uuid
+  purchaseLot PurchaseLot? @relation(fields: [purchaseLotId], references: [id], onDelete: Restrict)
+  originDocumentId String @db.Uuid
+  originDocument BusinessDocument @relation(fields: [originDocumentId], references: [id], onDelete: Restrict)
+  createdAt DateTime @default(now()) @db.Timestamptz
+  balances InventoryBalance[]
+  movements StockMovement[]
+  productionInputs ProductionInput[]
+  productionOutput ProductionOutput?
+  transformationInputs TransformationInput[]
+  transformationOutput TransformationOutput?
+  allocations ShipmentAllocation[]
+  reservations StockReservation[]
+  @@index([itemId, createdAt])
+}
+model BusinessDocument {
+  id String @id @db.Uuid
+  commandId String @unique @db.Uuid
+  command CommandReceipt @relation(fields: [commandId], references: [commandId], onDelete: Restrict)
+  type String
+  status String @default("POSTED")
+  version Int @default(1)
+  occurredAt DateTime @default(now()) @db.Timestamptz
+  postedAt DateTime @default(now()) @db.Timestamptz
+  reason String?
+  supplierId String? @db.Uuid
+  supplier Supplier? @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  batchId String? @db.Uuid
+  batch ProductionBatch? @relation("BatchDocuments", fields: [batchId], references: [id], onDelete: Restrict)
+  reversesId String? @unique @db.Uuid
+  reverses BusinessDocument? @relation("Reversal", fields: [reversesId], references: [id], onDelete: Restrict)
+  reversal BusinessDocument? @relation("Reversal")
+  movements StockMovement[]
+  lots StockLot[]
+  transformationInputs TransformationInput[]
+  transformationOutputs TransformationOutput[]
+  differenceKg Decimal? @db.Decimal(20,3)
+  adjustmentBeforeKg Decimal? @db.Decimal(20,3)
+  adjustmentAfterKg Decimal? @db.Decimal(20,3)
+  shipment Shipment?
+  @@index([type, occurredAt])
+}
+model StockReservation {
+  location StockLocation @relation(fields: [locationId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "reservation_location")
+  id String @id @default(uuid()) @db.Uuid
+  lotId String @db.Uuid
+  lot StockLot @relation(fields: [lotId], references: [id], onDelete: Restrict)
+  locationId String @db.Uuid
+  quantityKg Decimal @db.Decimal(20,3)
+  remainingKg Decimal @db.Decimal(20,3)
+  status String @default("ACTIVE")
+  reason String
+  createdAt DateTime @default(now()) @db.Timestamptz
+}
+model Equipment {
+  version Int @default(1)
+  id String @id @default(uuid()) @db.Uuid
+  siteId String @db.Uuid
+  site Site @relation(fields: [siteId], references: [id], onDelete: Restrict)
+  name String
+  direction String
+  isActive Boolean @default(true)
+  batches ProductionBatch[]
+  @@unique([siteId, name])
+}
+model ShiftInstance {
+  businessDate String @db.VarChar(10)
+  id String @id @default(uuid()) @db.Uuid
+  startsAt DateTime @db.Timestamptz
+  endsAt DateTime @db.Timestamptz
+  code String
+  name String
+  status String @default("OPEN")
+  version Int @default(1)
+  batches ProductionBatch[]
+  @@unique([startsAt, code])
+}
+model ProductionBatch {
+  previousBatchId String? @unique @db.Uuid
+  previousBatch ProductionBatch? @relation("ShiftCarryover", fields: [previousBatchId], references: [id], onDelete: Restrict)
+  nextBatch ProductionBatch? @relation("ShiftCarryover")
+  carryoverKg Decimal @default(0) @db.Decimal(20,3)
+  id String @id @default(uuid()) @db.Uuid
+  number String @unique
+  equipmentId String @db.Uuid
+  equipment Equipment @relation(fields: [equipmentId], references: [id], onDelete: Restrict)
+  shiftId String @db.Uuid
+  shift ShiftInstance @relation(fields: [shiftId], references: [id], onDelete: Restrict)
+  wipLocationId String @unique @db.Uuid
+  wipLocation StockLocation @relation(fields: [wipLocationId], references: [id], onDelete: Restrict)
+  status String @default("IN_PROGRESS")
+  version Int @default(1)
+  startedAt DateTime @default(now()) @db.Timestamptz
+  completedAt DateTime? @db.Timestamptz
+  notes String?
+  differenceKg Decimal? @db.Decimal(20,3)
+  differenceReason String?
+  inputs ProductionInput[]
+  outputs ProductionOutput[]
+  documents BusinessDocument[] @relation("BatchDocuments")
+}
+model ProductionInput {
+  id String @id @default(uuid()) @db.Uuid
+  batchId String @db.Uuid
+  batch ProductionBatch @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  lotId String @db.Uuid
+  lot StockLot @relation(fields: [lotId], references: [id], onDelete: Restrict)
+  quantityKg Decimal @db.Decimal(20,3)
+  @@unique([batchId, lotId])
+}
+model ProductionOutput {
+  id String @id @default(uuid()) @db.Uuid
+  batchId String @db.Uuid
+  batch ProductionBatch @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  lotId String @unique @db.Uuid
+  lot StockLot @relation(fields: [lotId], references: [id], onDelete: Restrict)
+  quantityKg Decimal @db.Decimal(20,3)
+}
+model TransformationInput {
+  documentId String @db.Uuid
+  document BusinessDocument @relation(fields: [documentId], references: [id], onDelete: Restrict)
+  lotId String @db.Uuid
+  lot StockLot @relation(fields: [lotId], references: [id], onDelete: Restrict)
+  quantityKg Decimal @db.Decimal(20,3)
+  @@id([documentId, lotId])
+}
+model TransformationOutput {
+  lotId String @id @db.Uuid
+  lot StockLot @relation(fields: [lotId], references: [id], onDelete: Restrict)
+  documentId String @db.Uuid
+  document BusinessDocument @relation(fields: [documentId], references: [id], onDelete: Restrict)
+  quantityKg Decimal @db.Decimal(20,3)
+}
+model Customer {
+  version Int @default(1)
+  id String @id @default(uuid()) @db.Uuid
+  name String @unique
+  phone String?
+  notes String?
+  isActive Boolean @default(true)
+  createdAt DateTime @default(now()) @db.Timestamptz
+  contracts Contract[]
+  shipments Shipment[]
+}
+model Contract {
+  id String @id @default(uuid()) @db.Uuid
+  number String @unique
+  customerId String @db.Uuid
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  currency Currency
+  status String @default("ACTIVE")
+  version Int @default(1)
+  plannedTruckCount Int?
+  notes String?
+  createdAt DateTime @default(now()) @db.Timestamptz
+  lines ContractLine[]
+  shipments Shipment[]
+}
+model ContractLine {
+  id String @id @default(uuid()) @db.Uuid
+  contractId String @db.Uuid
+  contract Contract @relation(fields: [contractId], references: [id], onDelete: Restrict)
+  itemId String @db.Uuid
+  item Item @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  agreedQuantityKg Decimal @db.Decimal(20,3)
+  unitPricePerKg Decimal @db.Decimal(20,6)
+  shipmentLines ShipmentLine[]
+  @@unique([contractId, itemId])
+}
+model Vehicle {
+  id String @id @default(uuid()) @db.Uuid
+  number String @unique
+  shipments Shipment[]
+}
+model Shipment {
+  id String @id @db.Uuid
+  documentId String @unique @db.Uuid
+  document BusinessDocument @relation(fields: [documentId], references: [id], onDelete: Restrict)
+  customerId String @db.Uuid
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  contractId String? @db.Uuid
+  contract Contract? @relation(fields: [contractId], references: [id], onDelete: Restrict)
+  vehicleId String? @db.Uuid
+  vehicle Vehicle? @relation(fields: [vehicleId], references: [id], onDelete: Restrict)
+  vehicleNumber String?
+  currency Currency
+  kind String
+  departedAt DateTime? @db.Timestamptz
+  lines ShipmentLine[]
+}
+model ShipmentLine {
+  id String @id @default(uuid()) @db.Uuid
+  shipmentId String @db.Uuid
+  shipment Shipment @relation(fields: [shipmentId], references: [id], onDelete: Restrict)
+  contractLineId String? @db.Uuid
+  contractLine ContractLine? @relation(fields: [contractLineId], references: [id], onDelete: Restrict)
+  itemId String @db.Uuid
+  item Item @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  quantityKg Decimal @db.Decimal(20,3)
+  unitPricePerKg Decimal @db.Decimal(20,6)
+  amount Decimal @db.Decimal(35,9)
+  allocations ShipmentAllocation[]
+}
+model ShipmentAllocation {
+  location StockLocation @relation(fields: [locationId], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "allocation_location")
+  id String @id @default(uuid()) @db.Uuid
+  shipmentLineId String @db.Uuid
+  shipmentLine ShipmentLine @relation(fields: [shipmentLineId], references: [id], onDelete: Restrict)
+  lotId String @db.Uuid
+  lot StockLot @relation(fields: [lotId], references: [id], onDelete: Restrict)
+  locationId String @db.Uuid
+  quantityKg Decimal @db.Decimal(20,3)
+}
+model CommandIntent {
+  id String @id @db.Uuid
+  actorId String @db.Uuid
+  actor User @relation(fields: [actorId], references: [id], onDelete: Restrict)
+  route String
+  payload Json
+  payloadHash String
+  epoch String
+  version Int @default(1)
+  status String @default("DRAFT")
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt @db.Timestamptz
+  @@index([actorId, status, updatedAt])
+}

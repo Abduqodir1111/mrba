@@ -1,0 +1,8 @@
+[Unit]
+Description=MRBA local encrypted database backup
+Requires=docker.service
+After=docker.service
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/mrba-local-backup
+UMask=0077
