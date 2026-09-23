@@ -273,7 +273,7 @@ export class LeadAgentController {
     if (!process.env.OPENAI_API_KEY)
       throw new BadRequestException("OpenAI API ещё не подключён");
     const runResult = await this.ops.command(req.actor.id, id, epoch, "LEAD_SEARCH_RUN", { configId: config.id, updatedAt: config.updatedAt.toISOString(), limit: dto.limit }, async (tx) => {
-      const run = await tx.leadSearchRun.create({ data: { createdBy: req.actor.id, status: "RUNNING", startedAt: new Date(), criteria: { ...(config as any), limit: dto.limit } } });
+      const run = await tx.leadSearchRun.create({ data: { createdBy: req.actor.id, status: "RUNNING", progressStage: "SEARCHING", targetCount: dto.limit, startedAt: new Date(), criteria: { ...(config as any), limit: dto.limit } } });
       return { id: run.id };
     }) as { id: string };
     void this.executeRun(runResult.id, config, dto.limit);
@@ -283,6 +283,7 @@ export class LeadAgentController {
   private async executeRun(runId: string, config: any, limit: number) {
     try {
       const leads = await discoverLeads(config, limit);
+      await this.db.leadSearchRun.update({ where: { id: runId }, data: { progressStage: "SAVING", foundCount: leads.length } });
       await this.db.$transaction(async (tx) => {
         for (const lead of leads) {
           let normalizedWebsite: string;
@@ -303,11 +304,11 @@ export class LeadAgentController {
             skipDuplicates: true,
           });
         }
-        await tx.leadSearchRun.update({ where: { id: runId }, data: { status: "COMPLETED", completedAt: new Date() } });
+        await tx.leadSearchRun.update({ where: { id: runId }, data: { status: "COMPLETED", progressStage: "COMPLETED", foundCount: leads.length, completedAt: new Date() } });
       });
     } catch (error) {
       const message = error instanceof Error ? error.message.slice(0, 1000) : "Неизвестная ошибка";
-      await this.db.leadSearchRun.update({ where: { id: runId }, data: { status: "FAILED", errorMessage: message, completedAt: new Date() } });
+      await this.db.leadSearchRun.update({ where: { id: runId }, data: { status: "FAILED", progressStage: "FAILED", errorMessage: message, completedAt: new Date() } });
     }
   }
 

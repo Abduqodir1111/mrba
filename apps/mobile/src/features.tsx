@@ -3034,7 +3034,7 @@ type LeadOverview = {
     outreachText?: string;
     evidence: Array<{ id: string; url: string; title?: string; excerpt?: string }>;
   }>;
-  runs: Array<{ id: string; status: string; createdAt: string; errorMessage?: string }>;
+  runs: Array<{ id: string; status: string; progressStage: string; targetCount: number; foundCount: number; createdAt: string; startedAt?: string; completedAt?: string; errorMessage?: string }>;
 };
 
 const leadStatus: Record<string, string> = {
@@ -3054,6 +3054,7 @@ export function LeadAgent() {
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState("");
   const [candidateLimit, setCandidateLimit] = useState("15");
+  const [clock, setClock] = useState(Date.now());
   const load = async () => {
     setBusy(true);
     try {
@@ -3068,9 +3069,15 @@ export function LeadAgent() {
   useEffect(() => void load(), []);
   useEffect(() => {
     if (overview?.runs[0]?.status !== "RUNNING") return;
-    const timer = setInterval(() => void load(), 10000);
+    const timer = setInterval(() => {
+      setClock(Date.now());
+      void load();
+    }, 2000);
     return () => clearInterval(timer);
   }, [overview?.runs[0]?.status]);
+  const activeRun = overview?.runs[0];
+  const progress = activeRun?.progressStage === "SAVING" ? 88 : activeRun?.status === "COMPLETED" ? 100 : 34;
+  const elapsedSeconds = activeRun?.startedAt ? Math.max(0, Math.floor((clock - new Date(activeRun.startedAt).getTime()) / 1000)) : 0;
   const changeStatus = async (id: string, next: string) => {
     try {
       await mutate(`/lead-agent/candidates/${id}/status`, { status: next });
@@ -3128,7 +3135,24 @@ export function LeadAgent() {
         )}
         <Btn title="Начать поиск" onPress={start} disabled={!overview?.readiness.parametersReady || !overview?.readiness.providerReady} />
         <Text style={[s.muted, { marginTop: 10 }]}>Сообщения кандидатам не отправляются автоматически. Сначала владелец проверяет компанию.</Text>
-        {overview?.runs[0]?.status === "RUNNING" && <Text style={[s.muted, { marginTop: 8 }]}>Поиск выполняется… Обновите экран через несколько минут.</Text>}
+        {activeRun?.status === "RUNNING" && (
+          <View style={s.searchProgress}>
+            <View style={s.row}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 9 }}>
+                <ActivityIndicator size="small" color={c.blue} />
+                <View>
+                  <Text style={s.label}>{activeRun.progressStage === "SAVING" ? "Сохраняем найденные компании" : "Агент ищет компании"}</Text>
+                  <Text style={s.muted}>{elapsedSeconds} сек. · можно оставить экран открытым</Text>
+                </View>
+              </View>
+              <Text style={s.badge}>{activeRun.foundCount}/{activeRun.targetCount}</Text>
+            </View>
+            <View style={s.progressTrack}>
+              <View style={[s.progressFill, { width: `${progress}%` }]} />
+            </View>
+            <Text style={s.muted}>{activeRun.foundCount ? `Найдено подходящих: ${activeRun.foundCount}` : "Проверяем сайты, контакты и соответствие продукции…"}</Text>
+          </View>
+        )}
         {overview?.runs[0]?.status === "FAILED" && <Text style={[s.error, { marginTop: 8 }]}>Последний поиск завершился ошибкой: {overview.runs[0].errorMessage}</Text>}
       </Card>
       {error ? <Text style={s.error}>{error}</Text> : null}
@@ -3183,6 +3207,22 @@ export function LeadAgent() {
 }
 
 const s = StyleSheet.create({
+  searchProgress: {
+    marginTop: 12,
+    padding: 13,
+    borderRadius: 14,
+    backgroundColor: c.softBlue,
+    borderWidth: 1,
+    borderColor: "#D8E5FF",
+  },
+  progressTrack: {
+    height: 6,
+    overflow: "hidden",
+    borderRadius: 6,
+    backgroundColor: "#D4DFF3",
+    marginVertical: 9,
+  },
+  progressFill: { height: 6, borderRadius: 6, backgroundColor: c.blue },
   productionTabs: {
     flexDirection: "row",
     alignSelf: "center",

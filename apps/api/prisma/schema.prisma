@@ -395,6 +395,9 @@ model LeadSearchRun {
   criteria Json
   provider String @default("OPENAI")
   errorMessage String?
+  targetCount Int @default(0)
+  foundCount Int @default(0)
+  progressStage String @default("QUEUED")
   startedAt DateTime? @db.Timestamptz
   completedAt DateTime? @db.Timestamptz
   createdAt DateTime @default(now()) @db.Timestamptz
