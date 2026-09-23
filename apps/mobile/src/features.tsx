@@ -3103,6 +3103,45 @@ export function LeadAgent() {
   if (busy && !overview) return <ActivityIndicator color={c.blue} />;
   return (
     <View>
+      {activeRun?.status === "RUNNING" && (
+        <View style={s.searchProgress}>
+          <View style={s.searchProgressHeader}>
+            <View style={s.searchPulse}>
+              <ActivityIndicator size="small" color="white" />
+            </View>
+            <View style={s.searchProgressTitle}>
+              <Text style={s.searchProgressEyebrow}>ИИ-АГЕНТ РАБОТАЕТ</Text>
+              <Text style={s.searchProgressHeading} numberOfLines={1}>
+                {activeRun.progressStage === "SAVING" ? "Сохраняем результаты" : "Ищем новых клиентов"}
+              </Text>
+            </View>
+            <View style={s.searchCountPill}>
+              <Text style={s.searchCountValue}>{activeRun.foundCount}</Text>
+              <Text style={s.searchCountTarget}>из {activeRun.targetCount}</Text>
+            </View>
+          </View>
+          <View style={s.progressTrack}>
+            <View style={[s.progressFill, { width: `${progress}%` }]} />
+          </View>
+          <View style={s.searchMetaRow}>
+            <View style={s.searchMetaItem}>
+              <Ionicons name="time-outline" size={16} color={c.muted} />
+              <Text style={s.searchMetaText}>{elapsedSeconds} сек.</Text>
+            </View>
+            <View style={s.searchMetaItem}>
+              <Ionicons name="business-outline" size={16} color={c.muted} />
+              <Text style={s.searchMetaText} numberOfLines={1}>
+                {activeRun.foundCount ? `Найдено: ${activeRun.foundCount}` : "Проверяем сайты"}
+              </Text>
+            </View>
+          </View>
+          <Text style={s.searchProgressHint} numberOfLines={2}>
+            {activeRun.progressStage === "SAVING"
+              ? "Проверяем контакты и создаём карточки кандидатов"
+              : "Ищем компании, проверяем продукцию и открытые контакты"}
+          </Text>
+        </View>
+      )}
       <Card>
         <View style={s.row}>
           <View style={{ flex: 1 }}>
@@ -3133,27 +3172,9 @@ export function LeadAgent() {
             </View>
           </View>
         )}
-        <Btn title="Начать поиск" onPress={start} disabled={!overview?.readiness.parametersReady || !overview?.readiness.providerReady} />
+        <Btn title={activeRun?.status === "RUNNING" ? "Поиск выполняется…" : "Начать поиск"} onPress={start} disabled={!overview?.readiness.parametersReady || !overview?.readiness.providerReady || activeRun?.status === "RUNNING"} />
         <Text style={[s.muted, { marginTop: 10 }]}>Сообщения кандидатам не отправляются автоматически. Сначала владелец проверяет компанию.</Text>
         <Text style={[s.muted, { marginTop: 4 }]}>Каждый запуск ищет только новые компании. Уже найденные кандидаты исключаются.</Text>
-        {activeRun?.status === "RUNNING" && (
-          <View style={s.searchProgress}>
-            <View style={s.row}>
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 9 }}>
-                <ActivityIndicator size="small" color={c.blue} />
-                <View>
-                  <Text style={s.label}>{activeRun.progressStage === "SAVING" ? "Сохраняем найденные компании" : "Агент ищет компании"}</Text>
-                  <Text style={s.muted}>{elapsedSeconds} сек. · можно оставить экран открытым</Text>
-                </View>
-              </View>
-              <Text style={s.badge}>{activeRun.foundCount}/{activeRun.targetCount}</Text>
-            </View>
-            <View style={s.progressTrack}>
-              <View style={[s.progressFill, { width: `${progress}%` }]} />
-            </View>
-            <Text style={s.muted}>{activeRun.foundCount ? `Найдено подходящих: ${activeRun.foundCount}` : "Проверяем сайты, контакты и соответствие продукции…"}</Text>
-          </View>
-        )}
         {overview?.runs[0]?.status === "FAILED" && <Text style={[s.error, { marginTop: 8 }]}>Последний поиск завершился ошибкой: {overview.runs[0].errorMessage}</Text>}
       </Card>
       {error ? <Text style={s.error}>{error}</Text> : null}
@@ -3209,21 +3230,71 @@ export function LeadAgent() {
 
 const s = StyleSheet.create({
   searchProgress: {
-    marginTop: 12,
-    padding: 13,
-    borderRadius: 14,
-    backgroundColor: c.softBlue,
+    width: "100%",
+    padding: 16,
+    borderRadius: 20,
+    backgroundColor: c.white,
     borderWidth: 1,
-    borderColor: "#D8E5FF",
-  },
-  progressTrack: {
-    height: 6,
+    borderColor: "#DDE6F5",
+    marginBottom: 14,
     overflow: "hidden",
-    borderRadius: 6,
-    backgroundColor: "#D4DFF3",
-    marginVertical: 9,
   },
-  progressFill: { height: 6, borderRadius: 6, backgroundColor: c.blue },
+  searchProgressHeader: {
+    width: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  searchPulse: {
+    width: 38,
+    height: 38,
+    flexShrink: 0,
+    borderRadius: 19,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: c.blue,
+  },
+  searchProgressTitle: { flex: 1, minWidth: 0 },
+  searchProgressEyebrow: { fontSize: 9, fontWeight: "800", letterSpacing: 1.2, color: c.blue },
+  searchProgressHeading: { marginTop: 2, fontSize: 16, fontWeight: "700", color: c.ink },
+  searchCountPill: {
+    flexShrink: 0,
+    minWidth: 58,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 13,
+    alignItems: "center",
+    backgroundColor: c.softBlue,
+  },
+  searchCountValue: { fontSize: 17, lineHeight: 19, fontWeight: "800", color: c.blue },
+  searchCountTarget: { fontSize: 9, lineHeight: 12, fontWeight: "600", color: c.muted },
+  searchMetaRow: {
+    width: "100%",
+    flexDirection: "row",
+    gap: 8,
+  },
+  searchMetaItem: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 11,
+    backgroundColor: c.bg,
+  },
+  searchMetaText: { flexShrink: 1, fontSize: 12, fontWeight: "600", color: c.ink },
+  searchProgressHint: { marginTop: 10, fontSize: 12, lineHeight: 17, color: c.muted },
+  progressTrack: {
+    width: "100%",
+    height: 7,
+    overflow: "hidden",
+    borderRadius: 7,
+    backgroundColor: "#E8EDF5",
+    marginVertical: 14,
+  },
+  progressFill: { height: 7, maxWidth: "100%", borderRadius: 7, backgroundColor: c.blue },
   productionTabs: {
     flexDirection: "row",
     alignSelf: "center",
