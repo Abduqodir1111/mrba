@@ -90,6 +90,20 @@ const date = (v: string) =>
     hour: "2-digit",
     minute: "2-digit",
   });
+const actionIcon = (title: string, danger: boolean) => {
+  if (danger) return "trash-outline";
+  const value = title.toLocaleLowerCase("ru");
+  if (value.includes("продат") || value.includes("продаж")) return "cash-outline";
+  if (value.includes("принять") || value.includes("загрузить")) return "download-outline";
+  if (value.includes("завершить") || value.includes("готов")) return "checkmark-circle-outline";
+  if (value.includes("начать") || value.includes("создать") || value.startsWith("+")) return "add-circle-outline";
+  if (value.includes("показать") || value.includes("открыть")) return "eye-outline";
+  if (value.includes("повторить") || value.includes("обновить")) return "refresh-outline";
+  if (value.includes("убрать") || value.includes("отмен")) return "remove-circle-outline";
+  if (value.includes("выдать") || value.includes("отгруз")) return "arrow-forward-circle-outline";
+  if (value.includes("сохран")) return "checkmark-outline";
+  return "arrow-forward-outline";
+};
 export const Btn = ({
   title,
   onPress,
@@ -102,38 +116,28 @@ export const Btn = ({
   secondary?: boolean;
   danger?: boolean;
   disabled?: boolean;
-}) => (
-  <Pressable
+}) => {
+  const icon = actionIcon(title, danger);
+  const displayTitle = title.replace(/^\+\s*/, "");
+  return <Pressable
     accessibilityRole="button"
     disabled={disabled}
     onPress={onPress}
-    style={[
-      s.button,
-      secondary && s.secondary,
-      danger && {
-        backgroundColor: "#FCECEC",
-        flexDirection: "row",
-        gap: 8,
-        alignItems: "center",
-        justifyContent: "center",
-      },
-      disabled && { opacity: 0.4 },
-    ]}
+    style={({ pressed }) => [s.button, secondary && s.secondary, danger && s.dangerButton, pressed && !disabled && s.buttonPressed, disabled && s.buttonDisabled]}
   >
-    {danger && (
-      <Ionicons name="close-circle-outline" size={22} color="#B84040" />
-    )}
+    <Ionicons name={icon as any} size={17} color={danger ? "#B84040" : secondary ? c.blue : c.white} />
     <Text
       style={[
         s.buttonText,
         secondary && { color: c.blue },
         danger && { color: "#B84040" },
       ]}
+      numberOfLines={2}
     >
-      {title}
+      {displayTitle}
     </Text>
   </Pressable>
-);
+};
 const Card = ({ children, style }: { children: React.ReactNode; style?: any }) => (
   <View style={[s.card, style]}>{children}</View>
 );
@@ -404,15 +408,16 @@ function Editor({
                 accessibilityLabel="Закрыть"
                 disabled={busy}
                 onPress={close}
+                style={({ pressed }) => [s.modalClose, pressed && { opacity: 0.6 }]}
               >
-                <Ionicons name="close-circle" color={c.muted} size={30} />
+                <Ionicons name="close" color={c.ink} size={20} />
               </Pressable>
             </View>
             <KeyboardAwareScrollView
               bottomOffset={24}
               keyboardDismissMode="on-drag"
               keyboardShouldPersistTaps="handled"
-              contentContainerStyle={{ padding: 22, paddingBottom: 40 }}
+              contentContainerStyle={{ padding: 16, paddingBottom: 24 }}
             >
               {form.subtitle && (
                 <Text style={[s.muted, { marginBottom: 20 }]}>
@@ -437,7 +442,7 @@ function Editor({
                 </View>
               )}
               {fields.map((f) => (
-                <View key={f.key} style={{ marginBottom: 20 }}>
+                <View key={f.key} style={{ marginBottom: 14 }}>
                   <Text style={s.label}>
                     {f.label}
                     {f.weight ? ` · ${weightUnit === "kg" ? "кг" : "т"}` : ""}
@@ -743,21 +748,22 @@ function Editor({
                 </View>
               )}
               {!!error && <Text style={s.error}>{error}</Text>}
-              <Btn
-                title={busy ? "Сохранение…" : actionLabel}
-                disabled={busy || invalidCompletionWeight || invalidSale}
-                onPress={() =>
-                  Alert.alert(
-                    `${actionLabel}?`,
-                    "После подтверждения операция будет сохранена на сервере.",
-                    [
-                      { text: "Назад", style: "cancel" },
-                      { text: actionLabel, onPress: () => void save() },
-                    ],
-                  )
-                }
-              />
             </KeyboardAwareScrollView>
+            <View style={s.modalFooter}>
+              <Btn
+                secondary
+                title="Отмена"
+                disabled={busy}
+                onPress={close}
+              />
+              <View style={{ flex: 1 }}>
+                <Btn
+                  title={busy ? "Сохранение…" : actionLabel}
+                  disabled={busy || invalidCompletionWeight || invalidSale}
+                  onPress={() => void save()}
+                />
+              </View>
+            </View>
           </View>
         </SafeAreaView>
       </KeyboardProvider>
@@ -3694,8 +3700,8 @@ const s = StyleSheet.create({
   productionTab: {
     flex: 1,
     minWidth: 0,
-    minHeight: 46,
-    paddingVertical: 12,
+    minHeight: 40,
+    paddingVertical: 9,
     paddingHorizontal: 8,
     borderRadius: 13,
     alignItems: "center",
@@ -3705,8 +3711,8 @@ const s = StyleSheet.create({
     backgroundColor: c.blue,
   },
   productionTabText: {
-    fontSize: 14,
-    fontWeight: "600",
+    fontSize: 13,
+    fontWeight: "700",
     textAlign: "center",
   },
 
@@ -3715,9 +3721,22 @@ const s = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    padding: 22,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
     borderBottomWidth: 1,
     borderColor: c.line,
+  },
+  modalClose: { width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center", backgroundColor: c.bg },
+  modalFooter: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 9,
+    paddingHorizontal: 16,
+    paddingTop: 5,
+    paddingBottom: 10,
+    borderTopWidth: 1,
+    borderColor: c.line,
+    backgroundColor: c.white,
   },
   card: {
     backgroundColor: c.white,
@@ -3748,33 +3767,42 @@ const s = StyleSheet.create({
   value: { fontSize: 14, fontWeight: "600", color: c.ink },
   button: {
     backgroundColor: c.blue,
-    borderRadius: 13,
-    minHeight: 48,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
+    borderRadius: 12,
+    minHeight: 42,
+    paddingHorizontal: 13,
+    paddingVertical: 9,
+    flexDirection: "row",
+    gap: 7,
     alignItems: "center",
     justifyContent: "center",
-    marginTop: 10,
+    marginTop: 7,
+    borderWidth: 1,
+    borderColor: c.blue,
   },
-  secondary: { backgroundColor: c.softBlue },
-  buttonText: { color: "white", fontWeight: "600", fontSize: 14 },
+  secondary: { backgroundColor: c.white, borderColor: "#C9D9F5" },
+  dangerButton: { backgroundColor: "#FFF4F4", borderColor: "#F1CACA" },
+  buttonPressed: { opacity: 0.82, transform: [{ scale: 0.985 }] },
+  buttonDisabled: { opacity: 0.4 },
+  buttonText: { flexShrink: 1, color: "white", fontWeight: "700", fontSize: 13, lineHeight: 17, textAlign: "center" },
   input: {
     backgroundColor: c.white,
     borderWidth: 1,
     borderColor: c.line,
-    borderRadius: 13,
-    padding: 15,
+    borderRadius: 12,
+    paddingHorizontal: 13,
+    paddingVertical: 11,
     fontSize: 16,
     color: c.ink,
-    minHeight: 50,
+    minHeight: 46,
   },
   label: { fontSize: 13, fontWeight: "600", color: c.ink, marginBottom: 9 },
   options: { gap: 7 },
   option: {
     flexDirection: "row",
     gap: 10,
-    padding: 14,
-    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    borderRadius: 11,
     borderWidth: 1,
     borderColor: c.line,
     backgroundColor: c.white,
