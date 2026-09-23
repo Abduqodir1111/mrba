@@ -165,6 +165,7 @@ async function discoverLeads(
   config: any,
   limit: number,
   excludedCompanies: Array<{ companyName: string; normalizedWebsite: string }>,
+  signal: AbortSignal,
 ): Promise<DiscoveredLead[]> {
   const responseSchema = structuredClone(leadSchema);
   responseSchema.properties.candidates.maxItems = limit;
@@ -178,7 +179,7 @@ async function discoverLeads(
       text: { format: { type: "json_schema", name: "mrba_lead_candidates", strict: true, schema: responseSchema } },
       input: `Найди до ${limit} НОВЫХ реальных потенциальных покупателей продукции MRBA.\nПродукция: ${config.productNames.join(", ")}.\nСтраны: ${config.countries.join(", ")}.\nМинимальная партия: ${config.minimumOrderKg} кг.\nТипы покупателей: ${config.buyerTypes.join(", ")}.\nУЖЕ НАЙДЕННЫЕ КОМПАНИИ, КОТОРЫЕ НЕЛЬЗЯ ВОЗВРАЩАТЬ ПОВТОРНО:\n${excludedCompanies.length ? excludedCompanies.map((item) => `- ${item.companyName} (${item.normalizedWebsite})`).join("\n") : "Список пуст"}\nНе возвращай эти компании, их филиалы, альтернативные домены или переименованные варианты. Искать только конечных промышленных потребителей и производителей; посредников, трейдеров, магазины и каталоги как кандидатов исключить. Каталоги можно использовать только как источник для обнаружения официального сайта. Сохраняй компанию только если на официальном сайте или подтверждённой странице найден хотя бы один прямой контакт: email, Telegram или WhatsApp. Не придумывай контакты. Если найден телефон, обязательно проверь страницы контактов и социальные ссылки компании: contactWhatsapp заполняй только полной явной ссылкой wa.me или whatsapp.com, опубликованной компанией; contactTelegram — только явной ссылкой t.me или telegram.me. Не считай обычный номер подтверждённым WhatsApp и не пытайся угадывать Telegram по номеру. Если канал не подтверждён, верни пустую строку. Добавь в evidence страницу, где опубликована каждая подтверждённая ссылка. Телефон без WhatsApp можно сохранить дополнительно. Для каждой компании укажи конкретные URL-доказательства, почему ей нужны медные или латунные прутки и где найден контакт. Определи язык сайта и составь короткий персональный текст первого обращения на этом языке. Не отправляй сообщения.`,
     }),
-    signal: AbortSignal.timeout(180000),
+    signal: AbortSignal.any([signal, AbortSignal.timeout(180000)]),
   });
   if (!response.ok) throw new Error(`OpenAI: ${response.status} ${await response.text()}`);
   const payload = await response.json() as any;
@@ -195,6 +196,8 @@ async function discoverLeads(
 @Controller("lead-agent")
 @UseGuards(AccessGuard)
 export class LeadAgentController {
+  private runningSearches = new Map<string, AbortController>();
+
   constructor(
     private db: Database,
     private ops: OperationsService,
@@ -283,11 +286,25 @@ export class LeadAgentController {
       const run = await tx.leadSearchRun.create({ data: { createdBy: req.actor.id, status: "RUNNING", progressStage: "SEARCHING", targetCount: dto.limit, startedAt: new Date(), criteria: { ...(config as any), limit: dto.limit } } });
       return { id: run.id };
     }) as { id: string };
-    void this.executeRun(runResult.id, config, dto.limit);
+    const controller = new AbortController();
+    this.runningSearches.set(runResult.id, controller);
+    void this.executeRun(runResult.id, config, dto.limit, controller);
     return { id: runResult.id, status: "RUNNING" };
   }
 
-  private async executeRun(runId: string, config: any, limit: number) {
+  @Post("runs/:id/cancel")
+  @Allow("factory.write")
+  async cancelRun(@Param("id", new ParseUUIDPipe()) runId: string) {
+    this.runningSearches.get(runId)?.abort();
+    const result = await this.db.leadSearchRun.updateMany({
+      where: { id: runId, status: "RUNNING" },
+      data: { status: "CANCELLED", progressStage: "CANCELLED", completedAt: new Date() },
+    });
+    if (!result.count) throw new BadRequestException("Поиск уже завершён");
+    return { id: runId, status: "CANCELLED" };
+  }
+
+  private async executeRun(runId: string, config: any, limit: number, controller: AbortController) {
     try {
       const existing = await this.db.leadCandidate.findMany({
         select: { companyName: true, normalizedWebsite: true },
@@ -299,7 +316,8 @@ export class LeadAgentController {
       const collected = new Map<string, DiscoveredLead>();
       const exclusions = [...existing];
       for (let attempt = 0; attempt < 3 && collected.size < limit; attempt++) {
-        const batch = await discoverLeads(config, limit - collected.size, exclusions);
+        const batch = await discoverLeads(config, limit - collected.size, exclusions, controller.signal);
+        if (controller.signal.aborted) throw new Error("SEARCH_CANCELLED");
         for (const lead of batch) {
           let domain: string;
           try { domain = normalizeWebsite(lead.website); } catch { continue; }
@@ -313,9 +331,11 @@ export class LeadAgentController {
         await this.db.leadSearchRun.update({ where: { id: runId }, data: { foundCount: collected.size } });
       }
       const leads = [...collected.values()];
+      if (controller.signal.aborted) throw new Error("SEARCH_CANCELLED");
       await this.db.leadSearchRun.update({ where: { id: runId }, data: { progressStage: "SAVING", foundCount: leads.length } });
       await this.db.$transaction(async (tx) => {
         for (const lead of leads) {
+          if (controller.signal.aborted) throw new Error("SEARCH_CANCELLED");
           let normalizedWebsite: string;
           try { normalizedWebsite = normalizeWebsite(lead.website); } catch { continue; }
           const candidate = await tx.leadCandidate.create({ data: { runId, companyName: lead.companyName, normalizedWebsite, website: lead.website, country: lead.country || null, city: lead.city || null, industry: lead.industry || null, score: lead.score, scoreExplanation: lead.scoreExplanation, contactEmail: lead.contactEmail || null, contactPhone: lead.contactPhone || null, contactTelegram: lead.contactTelegram || null, contactWhatsapp: lead.contactWhatsapp || null, outreachLanguage: lead.outreachLanguage || null, outreachText: lead.outreachText || null, lastVerifiedAt: new Date() } });
@@ -330,11 +350,18 @@ export class LeadAgentController {
             skipDuplicates: true,
           });
         }
+        if (controller.signal.aborted) throw new Error("SEARCH_CANCELLED");
         await tx.leadSearchRun.update({ where: { id: runId }, data: { status: "COMPLETED", progressStage: "COMPLETED", foundCount: leads.length, completedAt: new Date() } });
       });
     } catch (error) {
+      if (controller.signal.aborted || (error instanceof Error && error.message === "SEARCH_CANCELLED")) {
+        await this.db.leadSearchRun.updateMany({ where: { id: runId, status: "RUNNING" }, data: { status: "CANCELLED", progressStage: "CANCELLED", completedAt: new Date() } });
+        return;
+      }
       const message = error instanceof Error ? error.message.slice(0, 1000) : "Неизвестная ошибка";
       await this.db.leadSearchRun.update({ where: { id: runId }, data: { status: "FAILED", progressStage: "FAILED", errorMessage: message, completedAt: new Date() } });
+    } finally {
+      this.runningSearches.delete(runId);
     }
   }
 

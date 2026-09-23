@@ -3055,7 +3055,7 @@ export function LeadAgent() {
   const [overview, setOverview] = useState<LeadOverview | null>(null);
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState("");
-  const [candidateLimit, setCandidateLimit] = useState("15");
+  const [candidateLimit, setCandidateLimit] = useState("1");
   const [clock, setClock] = useState(Date.now());
   const load = async () => {
     setBusy(true);
@@ -3102,6 +3102,15 @@ export function LeadAgent() {
       Alert.alert("Поиск пока недоступен", (e as Error).message);
     }
   };
+  const cancelSearch = async () => {
+    if (!activeRun || activeRun.status !== "RUNNING") return;
+    try {
+      await mutate(`/lead-agent/runs/${activeRun.id}/cancel`, {});
+      await load();
+    } catch (e) {
+      Alert.alert("Не удалось отменить поиск", (e as Error).message);
+    }
+  };
   if (busy && !overview) return <ActivityIndicator color={c.blue} />;
   return (
     <View>
@@ -3142,6 +3151,10 @@ export function LeadAgent() {
               ? "Проверяем контакты и создаём карточки кандидатов"
               : "Ищем компании, проверяем продукцию и открытые контакты"}
           </Text>
+          <Pressable style={s.cancelSearchButton} onPress={() => void cancelSearch()}>
+            <Ionicons name="stop-circle-outline" size={18} color="#B84040" />
+            <Text style={s.cancelSearchText}>Отменить поиск</Text>
+          </Pressable>
         </View>
       )}
       <Card style={s.leadSetupCard}>
@@ -3399,6 +3412,17 @@ const s = StyleSheet.create({
   },
   searchMetaText: { flexShrink: 1, fontSize: 12, fontWeight: "600", color: c.ink },
   searchProgressHint: { marginTop: 10, fontSize: 12, lineHeight: 17, color: c.muted },
+  cancelSearchButton: {
+    minHeight: 40,
+    marginTop: 11,
+    borderRadius: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 7,
+    backgroundColor: "#FCECEC",
+  },
+  cancelSearchText: { fontSize: 12, fontWeight: "700", color: "#B84040" },
   progressTrack: {
     width: "100%",
     height: 7,
