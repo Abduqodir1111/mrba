@@ -3053,6 +3053,7 @@ export function LeadAgent() {
   const [overview, setOverview] = useState<LeadOverview | null>(null);
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState("");
+  const [candidateLimit, setCandidateLimit] = useState("15");
   const load = async () => {
     setBusy(true);
     try {
@@ -3079,8 +3080,13 @@ export function LeadAgent() {
     }
   };
   const start = async () => {
+    const limit = Number(candidateLimit);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
+      Alert.alert("Проверьте количество", "Укажите целое число от 1 до 50.");
+      return;
+    }
     try {
-      await mutate("/lead-agent/runs", {});
+      await mutate("/lead-agent/runs", { limit });
       await load();
       Alert.alert("Поиск начат", "Агент ищет и проверяет компании. Результаты появятся в карточках через несколько минут.");
     } catch (e) {
@@ -3104,6 +3110,14 @@ export function LeadAgent() {
         <Row label="Страны" value={overview?.config.countries.join(", ") || "—"} />
         <Row label="Минимальная партия" value={`${overview?.config.minimumOrderKg ?? 0} кг`} />
         <Row label="Посредники" value="Исключены" />
+        <Text style={[s.label, { marginTop: 10 }]}>Сколько кандидатов искать</Text>
+        <TextInput
+          style={s.input}
+          value={candidateLimit}
+          onChangeText={(value) => setCandidateLimit(value.replace(/\D/g, "").slice(0, 2))}
+          keyboardType="number-pad"
+          placeholder="От 1 до 50"
+        />
         {!!overview?.readiness.missing.length && (
           <View style={{ marginTop: 8 }}>
             <Text style={s.label}>Нужно указать позже</Text>

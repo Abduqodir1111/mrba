@@ -64,6 +64,10 @@ class LeadStatusDto {
   @IsOptional() @IsString() @MaxLength(1000) note?: string;
 }
 
+class StartLeadSearchDto {
+  @IsInt() @Min(1) @Max(50) limit!: number;
+}
+
 const clean = (values: string[]) =>
   [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 
@@ -136,7 +140,9 @@ const leadSchema = {
   },
 };
 
-async function discoverLeads(config: any): Promise<DiscoveredLead[]> {
+async function discoverLeads(config: any, limit: number): Promise<DiscoveredLead[]> {
+  const responseSchema = structuredClone(leadSchema);
+  responseSchema.properties.candidates.maxItems = limit;
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
@@ -144,8 +150,8 @@ async function discoverLeads(config: any): Promise<DiscoveredLead[]> {
       model: process.env.OPENAI_MODEL || "gpt-5.4-mini",
       tools: [{ type: "web_search", search_context_size: "medium" }],
       tool_choice: "auto",
-      text: { format: { type: "json_schema", name: "mrba_lead_candidates", strict: true, schema: leadSchema } },
-      input: `Найди до 15 реальных потенциальных покупателей продукции MRBA.\nПродукция: ${config.productNames.join(", ")}.\nСтраны: ${config.countries.join(", ")}.\nМинимальная партия: ${config.minimumOrderKg} кг.\nТипы покупателей: ${config.buyerTypes.join(", ")}.\nИскать только конечных промышленных потребителей и производителей; посредников, трейдеров, магазины и каталоги как кандидатов исключить. Каталоги можно использовать только как источник для обнаружения официального сайта. Сохраняй компанию только если на официальном сайте или подтверждённой странице найден хотя бы один прямой контакт: email, Telegram или WhatsApp. Не придумывай контакты. Телефон без WhatsApp не удовлетворяет обязательному условию, но его можно сохранить дополнительно. Для каждой компании укажи конкретные URL-доказательства, почему ей нужны медные или латунные прутки и где найден контакт. Определи язык сайта и составь короткий персональный текст первого обращения на этом языке. Не отправляй сообщения.`,
+      text: { format: { type: "json_schema", name: "mrba_lead_candidates", strict: true, schema: responseSchema } },
+      input: `Найди до ${limit} реальных потенциальных покупателей продукции MRBA.\nПродукция: ${config.productNames.join(", ")}.\nСтраны: ${config.countries.join(", ")}.\nМинимальная партия: ${config.minimumOrderKg} кг.\nТипы покупателей: ${config.buyerTypes.join(", ")}.\nИскать только конечных промышленных потребителей и производителей; посредников, трейдеров, магазины и каталоги как кандидатов исключить. Каталоги можно использовать только как источник для обнаружения официального сайта. Сохраняй компанию только если на официальном сайте или подтверждённой странице найден хотя бы один прямой контакт: email, Telegram или WhatsApp. Не придумывай контакты. Телефон без WhatsApp не удовлетворяет обязательному условию, но его можно сохранить дополнительно. Для каждой компании укажи конкретные URL-доказательства, почему ей нужны медные или латунные прутки и где найден контакт. Определи язык сайта и составь короткий персональный текст первого обращения на этом языке. Не отправляй сообщения.`,
     }),
     signal: AbortSignal.timeout(180000),
   });
@@ -234,23 +240,24 @@ export class LeadAgentController {
     @Req() req: AuthRequest,
     @Headers("idempotency-key") id: string,
     @Headers("x-recovery-epoch") epoch: string,
+    @Body() dto: StartLeadSearchDto,
   ) {
     const config = await this.db.leadAgentConfig.findUnique({ where: { id: "default" } });
     if (!config || (!config.productNames.length && !config.productIds.length) || !config.countries.length || !config.minimumOrderKg || !config.buyerTypes.length || !config.outreachLanguages.length || config.intermediaryMode === "UNDECIDED")
       throw new BadRequestException("Сначала заполните параметры поиска клиентов");
     if (!process.env.OPENAI_API_KEY)
       throw new BadRequestException("OpenAI API ещё не подключён");
-    const runResult = await this.ops.command(req.actor.id, id, epoch, "LEAD_SEARCH_RUN", { configId: config.id, updatedAt: config.updatedAt.toISOString() }, async (tx) => {
-      const run = await tx.leadSearchRun.create({ data: { createdBy: req.actor.id, status: "RUNNING", startedAt: new Date(), criteria: config as any } });
+    const runResult = await this.ops.command(req.actor.id, id, epoch, "LEAD_SEARCH_RUN", { configId: config.id, updatedAt: config.updatedAt.toISOString(), limit: dto.limit }, async (tx) => {
+      const run = await tx.leadSearchRun.create({ data: { createdBy: req.actor.id, status: "RUNNING", startedAt: new Date(), criteria: { ...(config as any), limit: dto.limit } } });
       return { id: run.id };
     }) as { id: string };
-    void this.executeRun(runResult.id, config);
+    void this.executeRun(runResult.id, config, dto.limit);
     return { id: runResult.id, status: "RUNNING" };
   }
 
-  private async executeRun(runId: string, config: any) {
+  private async executeRun(runId: string, config: any, limit: number) {
     try {
-      const leads = await discoverLeads(config);
+      const leads = await discoverLeads(config, limit);
       await this.db.$transaction(async (tx) => {
         for (const lead of leads) {
           let normalizedWebsite: string;
