@@ -3144,28 +3144,54 @@ export function LeadAgent() {
           </Text>
         </View>
       )}
-      <Card>
-        <View style={s.row}>
-          <View style={{ flex: 1 }}>
-            <Text style={s.section}>ИИ-поиск клиентов</Text>
-            <Text style={s.muted}>Кандидаты из открытых источников с проверяемым рейтингом</Text>
+      <Card style={s.leadSetupCard}>
+        <View style={s.leadSetupHeader}>
+          <View style={s.leadSetupIcon}>
+            <Ionicons name="sparkles-outline" size={22} color={c.blue} />
           </View>
-          <Ionicons name="sparkles-outline" size={28} color={c.blue} />
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={s.leadSetupTitle}>ИИ-поиск клиентов</Text>
+            <Text style={s.leadSetupSubtitle} numberOfLines={1}>Проверенные промышленные покупатели</Text>
+          </View>
+          <View style={[s.providerPill, !overview?.readiness.providerReady && s.providerPillOff]}>
+            <View style={[s.providerDot, !overview?.readiness.providerReady && { backgroundColor: c.orange }]} />
+            <Text style={[s.providerText, !overview?.readiness.providerReady && { color: c.orange }]}>OpenAI</Text>
+          </View>
         </View>
-        <Row label="Параметры поиска" value={overview?.readiness.parametersReady ? "Готовы" : "Ожидаются"} />
-        <Row label="OpenAI" value={overview?.readiness.providerReady ? "Подключён" : "Не подключён"} />
-        <Row label="Продукция" value={overview?.config.productNames.join(", ") || "—"} />
-        <Row label="Страны" value={overview?.config.countries.join(", ") || "—"} />
-        <Row label="Минимальная партия" value={`${overview?.config.minimumOrderKg ?? 0} кг`} />
-        <Row label="Посредники" value="Исключены" />
-        <Text style={[s.label, { marginTop: 10 }]}>Сколько кандидатов искать</Text>
-        <TextInput
-          style={s.input}
-          value={candidateLimit}
-          onChangeText={(value) => setCandidateLimit(value.replace(/\D/g, "").slice(0, 2))}
-          keyboardType="number-pad"
-          placeholder="От 1 до 50"
-        />
+        <View style={s.leadCriteriaBox}>
+          <View style={s.leadCriteriaLine}>
+            <Ionicons name="cube-outline" size={17} color={c.blue} />
+            <Text style={s.leadCriteriaText} numberOfLines={2}>{overview?.config.productNames.join(" · ") || "Продукция не указана"}</Text>
+          </View>
+          <View style={s.leadCriteriaLine}>
+            <Ionicons name="location-outline" size={17} color={c.blue} />
+            <Text style={s.leadCriteriaText} numberOfLines={2}>{overview?.config.countries.join(" · ") || "Страны не указаны"}</Text>
+          </View>
+        </View>
+        <View style={s.leadQuickFacts}>
+          <View style={s.leadFactPill}>
+            <Ionicons name="scale-outline" size={14} color={c.green} />
+            <Text style={s.leadFactText}>от {overview?.config.minimumOrderKg ?? 0} кг</Text>
+          </View>
+          <View style={s.leadFactPill}>
+            <Ionicons name="business-outline" size={14} color={c.green} />
+            <Text style={s.leadFactText}>Без посредников</Text>
+          </View>
+        </View>
+        <View style={s.leadLimitRow}>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={s.label}>Количество кандидатов</Text>
+            <Text style={s.muted}>От 1 до 50 за один поиск</Text>
+          </View>
+          <TextInput
+            style={s.leadLimitInput}
+            value={candidateLimit}
+            onChangeText={(value) => setCandidateLimit(value.replace(/\D/g, "").slice(0, 2))}
+            keyboardType="number-pad"
+            placeholder="15"
+            maxLength={2}
+          />
+        </View>
         {!!overview?.readiness.missing.length && (
           <View style={{ marginTop: 8 }}>
             <Text style={s.label}>Нужно указать позже</Text>
@@ -3175,8 +3201,10 @@ export function LeadAgent() {
           </View>
         )}
         <Btn title={activeRun?.status === "RUNNING" ? "Поиск выполняется…" : "Начать поиск"} onPress={start} disabled={!overview?.readiness.parametersReady || !overview?.readiness.providerReady || activeRun?.status === "RUNNING"} />
-        <Text style={[s.muted, { marginTop: 10 }]}>Сообщения кандидатам не отправляются автоматически. Сначала владелец проверяет компанию.</Text>
-        <Text style={[s.muted, { marginTop: 4 }]}>Каждый запуск ищет только новые компании. Уже найденные кандидаты исключаются.</Text>
+        <View style={s.leadSafetyNote}>
+          <Ionicons name="shield-checkmark-outline" size={16} color={c.green} />
+          <Text style={s.leadSafetyText}>Только новые компании · сообщения отправляете вы</Text>
+        </View>
         {overview?.runs[0]?.status === "FAILED" && <Text style={[s.error, { marginTop: 8 }]}>Последний поиск завершился ошибкой: {overview.runs[0].errorMessage}</Text>}
       </Card>
       {error ? <Text style={s.error}>{error}</Text> : null}
@@ -3242,6 +3270,61 @@ export function LeadAgent() {
 }
 
 const s = StyleSheet.create({
+  leadSetupCard: { padding: 16 },
+  leadSetupHeader: { flexDirection: "row", alignItems: "center", gap: 10, width: "100%" },
+  leadSetupIcon: {
+    width: 40,
+    height: 40,
+    flexShrink: 0,
+    borderRadius: 13,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: c.softBlue,
+  },
+  leadSetupTitle: { fontSize: 17, fontWeight: "700", color: c.ink },
+  leadSetupSubtitle: { marginTop: 2, fontSize: 11, color: c.muted },
+  providerPill: {
+    flexShrink: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: 9,
+    paddingVertical: 7,
+    borderRadius: 16,
+    backgroundColor: "#EAF7F2",
+  },
+  providerPillOff: { backgroundColor: "#FFF4E8" },
+  providerDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: c.green },
+  providerText: { fontSize: 10, fontWeight: "700", color: c.green },
+  leadCriteriaBox: {
+    marginTop: 13,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 13,
+    backgroundColor: c.bg,
+  },
+  leadCriteriaLine: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 7 },
+  leadCriteriaText: { flex: 1, minWidth: 0, fontSize: 12, lineHeight: 17, fontWeight: "600", color: c.ink },
+  leadQuickFacts: { flexDirection: "row", flexWrap: "wrap", gap: 7, marginTop: 9 },
+  leadFactPill: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 9, paddingVertical: 6, borderRadius: 12, backgroundColor: "#EAF7F2" },
+  leadFactText: { fontSize: 11, fontWeight: "700", color: c.green },
+  leadLimitRow: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 13 },
+  leadLimitInput: {
+    width: 72,
+    minHeight: 48,
+    flexShrink: 0,
+    paddingHorizontal: 10,
+    borderWidth: 1,
+    borderColor: c.line,
+    borderRadius: 13,
+    backgroundColor: c.white,
+    textAlign: "center",
+    fontSize: 18,
+    fontWeight: "700",
+    color: c.ink,
+  },
+  leadSafetyNote: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, marginTop: 10 },
+  leadSafetyText: { flexShrink: 1, textAlign: "center", fontSize: 11, lineHeight: 16, color: c.muted },
   newLeadCard: {
     borderColor: "#9FD7C8",
     borderWidth: 1.5,
