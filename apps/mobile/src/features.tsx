@@ -6,6 +6,7 @@ import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Linking,
   Modal,
   Pressable,
   StyleSheet,
@@ -3011,6 +3012,119 @@ export function Reports() {
     </View>
   );
 }
+type LeadOverview = {
+  readiness: { parametersReady: boolean; providerReady: boolean; missing: string[] };
+  candidates: Array<{
+    id: string;
+    companyName: string;
+    website: string;
+    country?: string;
+    city?: string;
+    industry?: string;
+    score: number;
+    scoreExplanation: string;
+    status: string;
+    contactEmail?: string;
+    contactPhone?: string;
+    evidence: Array<{ id: string; url: string; title?: string }>;
+  }>;
+  runs: Array<{ id: string; status: string; createdAt: string }>;
+};
+
+const leadStatus: Record<string, string> = {
+  NEW: "Новый",
+  VERIFIED: "Проверен",
+  CONTACTED: "Связались",
+  NEGOTIATION: "Переговоры",
+  CUSTOMER: "Клиент",
+  REJECTED: "Отказ",
+};
+
+export function LeadAgent() {
+  const [overview, setOverview] = useState<LeadOverview | null>(null);
+  const [busy, setBusy] = useState(true);
+  const [error, setError] = useState("");
+  const load = async () => {
+    setBusy(true);
+    try {
+      setOverview(await api<LeadOverview>("/lead-agent/overview"));
+      setError("");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  useEffect(() => void load(), []);
+  const changeStatus = async (id: string, next: string) => {
+    try {
+      await mutate(`/lead-agent/candidates/${id}/status`, { status: next });
+      await load();
+    } catch (e) {
+      Alert.alert("Не удалось изменить статус", (e as Error).message);
+    }
+  };
+  const start = async () => {
+    try {
+      await mutate("/lead-agent/runs", {});
+      await load();
+    } catch (e) {
+      Alert.alert("Поиск пока недоступен", (e as Error).message);
+    }
+  };
+  if (busy && !overview) return <ActivityIndicator color={c.blue} />;
+  return (
+    <View>
+      <Card>
+        <View style={s.row}>
+          <View style={{ flex: 1 }}>
+            <Text style={s.section}>ИИ-поиск клиентов</Text>
+            <Text style={s.muted}>Кандидаты из открытых источников с проверяемым рейтингом</Text>
+          </View>
+          <Ionicons name="sparkles-outline" size={28} color={c.blue} />
+        </View>
+        <Row label="Параметры поиска" value={overview?.readiness.parametersReady ? "Готовы" : "Ожидаются"} />
+        <Row label="OpenAI" value={overview?.readiness.providerReady ? "Подключён" : "Не подключён"} />
+        {!!overview?.readiness.missing.length && (
+          <View style={{ marginTop: 8 }}>
+            <Text style={s.label}>Нужно указать позже</Text>
+            <View style={s.chips}>
+              {overview.readiness.missing.map((item) => <Text key={item} style={s.chip}>{item}</Text>)}
+            </View>
+          </View>
+        )}
+        <Btn title="Начать поиск" onPress={start} disabled={!overview?.readiness.parametersReady || !overview?.readiness.providerReady} />
+        <Text style={[s.muted, { marginTop: 10 }]}>Сообщения кандидатам не отправляются автоматически. Сначала владелец проверяет компанию.</Text>
+      </Card>
+      {error ? <Text style={s.error}>{error}</Text> : null}
+      <Text style={s.section}>Кандидаты · {overview?.candidates.length ?? 0}</Text>
+      {!overview?.candidates.length ? (
+        <Empty text="После настройки здесь появятся компании, рейтинг, контакты и ссылки на источники." />
+      ) : overview.candidates.map((lead) => (
+        <Card key={lead.id}>
+          <View style={s.row}>
+            <Text style={[s.section, { flex: 1 }]}>{lead.companyName}</Text>
+            <Text style={s.badge}>{lead.score}/100</Text>
+          </View>
+          <Text style={s.muted}>{[lead.industry, lead.city, lead.country].filter(Boolean).join(" · ")}</Text>
+          <Text style={[s.text, { marginTop: 10 }]}>{lead.scoreExplanation}</Text>
+          <Row label="Статус" value={leadStatus[lead.status] ?? lead.status} />
+          {!!lead.contactEmail && <Row label="E-mail" value={lead.contactEmail} />}
+          {!!lead.contactPhone && <Row label="Телефон" value={lead.contactPhone} />}
+          <Btn title="Открыть сайт" secondary onPress={() => void Linking.openURL(lead.website)} />
+          <View style={s.chips}>
+            {(["VERIFIED", "CONTACTED", "NEGOTIATION", "REJECTED"] as const).map((next) => (
+              <Pressable key={next} style={[s.chip, lead.status === next && s.chipOn]} onPress={() => void changeStatus(lead.id, next)}>
+                <Text style={s.text}>{leadStatus[next]}</Text>
+              </Pressable>
+            ))}
+          </View>
+        </Card>
+      ))}
+    </View>
+  );
+}
+
 const s = StyleSheet.create({
   productionTabs: {
     flexDirection: "row",

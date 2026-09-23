@@ -67,6 +67,8 @@ model User {
   audit AuditLog[]
   purchases PurchaseReceipt[]
   drafts CommandIntent[]
+  leadSearchRuns LeadSearchRun[]
+  leadStatusEvents LeadStatusEvent[]
 }
 model Role {
   id String @id @default(uuid()) @db.Uuid
@@ -371,6 +373,81 @@ model Customer {
   createdAt DateTime @default(now()) @db.Timestamptz
   contracts Contract[]
   shipments Shipment[]
+}
+
+model LeadAgentConfig {
+  id String @id @default("default")
+  productIds String[] @default([]) @db.Uuid
+  countries String[] @default([])
+  minimumOrderKg Int?
+  buyerTypes String[] @default([])
+  outreachLanguages String[] @default([])
+  intermediaryMode String @default("UNDECIDED")
+  updatedAt DateTime @updatedAt @db.Timestamptz
+}
+
+model LeadSearchRun {
+  id String @id @default(uuid()) @db.Uuid
+  status String @default("QUEUED")
+  createdBy String @db.Uuid
+  actor User @relation(fields: [createdBy], references: [id], onDelete: Restrict)
+  criteria Json
+  provider String @default("OPENAI")
+  errorMessage String?
+  startedAt DateTime? @db.Timestamptz
+  completedAt DateTime? @db.Timestamptz
+  createdAt DateTime @default(now()) @db.Timestamptz
+  candidates LeadCandidate[]
+  @@index([createdAt])
+}
+
+model LeadCandidate {
+  id String @id @default(uuid()) @db.Uuid
+  runId String @db.Uuid
+  run LeadSearchRun @relation(fields: [runId], references: [id], onDelete: Restrict)
+  companyName String
+  normalizedWebsite String
+  website String
+  country String?
+  city String?
+  industry String?
+  score Int
+  scoreExplanation String
+  status String @default("NEW")
+  contactName String?
+  contactRole String?
+  contactEmail String?
+  contactPhone String?
+  lastVerifiedAt DateTime @db.Timestamptz
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt @db.Timestamptz
+  evidence LeadEvidence[]
+  statusEvents LeadStatusEvent[]
+  @@unique([normalizedWebsite])
+  @@index([status, score])
+}
+
+model LeadEvidence {
+  id String @id @default(uuid()) @db.Uuid
+  candidateId String @db.Uuid
+  candidate LeadCandidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  url String
+  title String?
+  excerpt String?
+  verifiedAt DateTime @db.Timestamptz
+  @@unique([candidateId, url])
+}
+
+model LeadStatusEvent {
+  id String @id @default(uuid()) @db.Uuid
+  candidateId String @db.Uuid
+  candidate LeadCandidate @relation(fields: [candidateId], references: [id], onDelete: Restrict)
+  status String
+  actorId String @db.Uuid
+  actor User @relation(fields: [actorId], references: [id], onDelete: Restrict)
+  note String?
+  createdAt DateTime @default(now()) @db.Timestamptz
+  @@index([candidateId, createdAt])
 }
 model Contract {
   id String @id @default(uuid()) @db.Uuid

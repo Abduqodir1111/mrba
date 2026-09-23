@@ -22,6 +22,7 @@ import { CorrectionsController } from "./corrections";
 import { ReportsController } from "./reports";
 import { RecoveryController } from "./recovery";
 import { SalesController } from "./sales";
+import { LeadAgentController } from "./leads";
 import { FactoryService, FactoryController } from "./factory";
 import { Database } from "./db";
 import { AccessGuard, AuthService, AuthController } from "./identity";
@@ -89,6 +90,7 @@ class Errors implements ExceptionFilter {
     ReportsController,
     CorrectionsController,
     AdminController,
+    LeadAgentController,
   ],
   providers: [
     Database,

@@ -41,6 +41,7 @@ services:
       DATABASE_URL: postgresql://mrba_app:${APP_DB_PASSWORD}@postgres:5432/mrba
       JWT_SECRET: ${JWT_SECRET:?Set JWT secret}
       RECOVERY_EPOCH: ${RECOVERY_EPOCH:?Set recovery epoch}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     depends_on:
       migrate: {condition: service_completed_successfully}
     networks: [database, frontend]

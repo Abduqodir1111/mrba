@@ -2,7 +2,7 @@ import {
   KeyboardAwareScrollView,
   KeyboardProvider,
 } from "react-native-keyboard-controller";
-import { Workspace, Reports, CatalogActions } from "./src/features";
+import { Workspace, Reports, CatalogActions, LeadAgent } from "./src/features";
 import Decimal from "decimal.js";
 import React, { useEffect, useState } from "react";
 import {
@@ -187,7 +187,7 @@ function FactoryApp() {
   const [boot, setBoot] = useState(true);
   const [busy, setBusy] = useState(false);
   const [tab, setTab] = useState<Tab>("Главная");
-  const [moreView, setMoreView] = useState<"menu" | "reports" | "management">(
+  const [moreView, setMoreView] = useState<"menu" | "reports" | "management" | "leads">(
     "menu",
   );
   const [data, setData] = useState<Dashboard | null>(null);
@@ -590,6 +590,7 @@ function FactoryApp() {
             {moreView === "management" && (
               <Workspace section="management" onChanged={() => void reload()} />
             )}
+            {moreView === "leads" && <LeadAgent />}
             {moreView === "menu" && (
               <>
                 <View style={s.profile}>
@@ -615,6 +616,12 @@ function FactoryApp() {
                     title="Контроль"
                     subtitle="Справочники и история"
                     onPress={() => setMoreView("management")}
+                  />
+                  <Action
+                    icon="sparkles-outline"
+                    title="Поиск клиентов"
+                    subtitle="ИИ-кандидаты, рейтинг и проверка"
+                    onPress={() => setMoreView("leads")}
                   />
                 </View>
                 <Heading title="Справочники" />
