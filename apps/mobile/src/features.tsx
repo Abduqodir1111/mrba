@@ -3266,14 +3266,26 @@ export function LeadAgent() {
                 <View style={s.leadContactLine}>
                   <Ionicons name="call-outline" size={15} color={c.muted} />
                   <Text style={s.leadContactText} numberOfLines={1}>{lead.contactPhone}</Text>
+                  <View style={s.leadVerifiedChannels}>
+                    {!!lead.contactTelegram && (
+                      <Pressable accessibilityLabel="Открыть подтверждённый Telegram" style={[s.leadChannelIcon, s.leadTelegramIcon]} onPress={() => void Linking.openURL(telegramUrl(lead.contactTelegram!))}>
+                        <Ionicons name="paper-plane" size={14} color={c.white} />
+                      </Pressable>
+                    )}
+                    {!!lead.contactWhatsapp && (
+                      <Pressable accessibilityLabel="Открыть подтверждённый WhatsApp" style={[s.leadChannelIcon, s.leadWhatsappIcon]} onPress={() => void Linking.openURL(whatsappUrl(lead.contactWhatsapp!))}>
+                        <Ionicons name="logo-whatsapp" size={15} color={c.white} />
+                      </Pressable>
+                    )}
+                  </View>
                 </View>
               )}
             </View>
           )}
           <View style={s.leadActions}>
             {!!lead.contactPhone && <Pressable style={s.leadAction} onPress={() => void Linking.openURL(`tel:${lead.contactPhone!.replace(/[^+\d]/g, "")}`)}><Ionicons name="call-outline" size={17} color={c.blue} /><Text style={s.leadActionText}>Позвонить</Text></Pressable>}
-            {!!lead.contactTelegram && <Pressable style={s.leadAction} onPress={() => void Linking.openURL(telegramUrl(lead.contactTelegram!))}><Ionicons name="paper-plane-outline" size={17} color={c.blue} /><Text style={s.leadActionText}>Telegram</Text></Pressable>}
-            {!!lead.contactWhatsapp && <Pressable style={s.leadAction} onPress={() => void Linking.openURL(whatsappUrl(lead.contactWhatsapp!))}><Ionicons name="logo-whatsapp" size={17} color={c.green} /><Text style={s.leadActionText}>WhatsApp</Text></Pressable>}
+            {!lead.contactPhone && !!lead.contactTelegram && <Pressable style={s.leadAction} onPress={() => void Linking.openURL(telegramUrl(lead.contactTelegram!))}><Ionicons name="paper-plane-outline" size={17} color={c.blue} /><Text style={s.leadActionText}>Telegram</Text></Pressable>}
+            {!lead.contactPhone && !!lead.contactWhatsapp && <Pressable style={s.leadAction} onPress={() => void Linking.openURL(whatsappUrl(lead.contactWhatsapp!))}><Ionicons name="logo-whatsapp" size={17} color={c.green} /><Text style={s.leadActionText}>WhatsApp</Text></Pressable>}
             {!!lead.contactEmail && <Pressable style={s.leadAction} onPress={() => void Linking.openURL(`mailto:${lead.contactEmail}?subject=${encodeURIComponent("Предложение от MRBA")}&body=${encodeURIComponent(lead.outreachText || "")}`)}><Ionicons name="mail-outline" size={17} color={c.blue} /><Text style={s.leadActionText}>Почта</Text></Pressable>}
             <Pressable style={s.leadAction} onPress={() => void Linking.openURL(lead.website)}><Ionicons name="globe-outline" size={17} color={c.blue} /><Text style={s.leadActionText}>Сайт</Text></Pressable>
           </View>
@@ -3418,6 +3430,10 @@ const s = StyleSheet.create({
   leadContacts: { gap: 5, marginTop: 9 },
   leadContactLine: { flexDirection: "row", alignItems: "center", gap: 7 },
   leadContactText: { flex: 1, minWidth: 0, fontSize: 11, color: c.muted },
+  leadVerifiedChannels: { flexShrink: 0, flexDirection: "row", alignItems: "center", gap: 5 },
+  leadChannelIcon: { width: 27, height: 27, borderRadius: 14, alignItems: "center", justifyContent: "center" },
+  leadTelegramIcon: { backgroundColor: "#229ED9" },
+  leadWhatsappIcon: { backgroundColor: "#25D366" },
   leadActions: { flexDirection: "row", flexWrap: "wrap", gap: 7, marginTop: 11 },
   leadAction: {
     minHeight: 35,
