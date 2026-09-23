@@ -268,7 +268,15 @@ export class LeadAgentController {
             update: { runId, companyName: lead.companyName, website: lead.website, country: lead.country || null, city: lead.city || null, industry: lead.industry || null, score: lead.score, scoreExplanation: lead.scoreExplanation, contactEmail: lead.contactEmail || null, contactPhone: lead.contactPhone || null, contactTelegram: lead.contactTelegram || null, contactWhatsapp: lead.contactWhatsapp || null, outreachLanguage: lead.outreachLanguage || null, outreachText: lead.outreachText || null, lastVerifiedAt: new Date() },
           });
           await tx.leadEvidence.deleteMany({ where: { candidateId: candidate.id } });
-          if (lead.evidence.length) await tx.leadEvidence.createMany({ data: lead.evidence.map((e) => ({ candidateId: candidate.id, url: e.url, title: e.title || null, excerpt: e.excerpt || null, verifiedAt: new Date() })) });
+          const uniqueEvidence = [...new Map(
+            lead.evidence
+              .filter((e) => e.url)
+              .map((e) => [e.url.trim(), e] as const),
+          ).values()];
+          if (uniqueEvidence.length) await tx.leadEvidence.createMany({
+            data: uniqueEvidence.map((e) => ({ candidateId: candidate.id, url: e.url.trim(), title: e.title || null, excerpt: e.excerpt || null, verifiedAt: new Date() })),
+            skipDuplicates: true,
+          });
         }
         await tx.leadSearchRun.update({ where: { id: runId }, data: { status: "COMPLETED", completedAt: new Date() } });
       });
