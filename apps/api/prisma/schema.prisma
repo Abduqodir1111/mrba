@@ -378,6 +378,7 @@ model Customer {
 model LeadAgentConfig {
   id String @id @default("default")
   productIds String[] @default([]) @db.Uuid
+  productNames String[] @default([])
   countries String[] @default([])
   minimumOrderKg Int?
   buyerTypes String[] @default([])
@@ -418,6 +419,10 @@ model LeadCandidate {
   contactRole String?
   contactEmail String?
   contactPhone String?
+  contactTelegram String?
+  contactWhatsapp String?
+  outreachLanguage String?
+  outreachText String?
   lastVerifiedAt DateTime @db.Timestamptz
   createdAt DateTime @default(now()) @db.Timestamptz
   updatedAt DateTime @updatedAt @db.Timestamptz

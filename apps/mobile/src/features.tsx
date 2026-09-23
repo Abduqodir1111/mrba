@@ -9,6 +9,7 @@ import {
   Linking,
   Modal,
   Pressable,
+  Share,
   StyleSheet,
   Switch,
   Text,
@@ -3013,6 +3014,7 @@ export function Reports() {
   );
 }
 type LeadOverview = {
+  config: { productNames: string[]; countries: string[]; minimumOrderKg?: number; buyerTypes: string[]; outreachLanguages: string[]; intermediaryMode: string };
   readiness: { parametersReady: boolean; providerReady: boolean; missing: string[] };
   candidates: Array<{
     id: string;
@@ -3026,9 +3028,13 @@ type LeadOverview = {
     status: string;
     contactEmail?: string;
     contactPhone?: string;
-    evidence: Array<{ id: string; url: string; title?: string }>;
+    contactTelegram?: string;
+    contactWhatsapp?: string;
+    outreachLanguage?: string;
+    outreachText?: string;
+    evidence: Array<{ id: string; url: string; title?: string; excerpt?: string }>;
   }>;
-  runs: Array<{ id: string; status: string; createdAt: string }>;
+  runs: Array<{ id: string; status: string; createdAt: string; errorMessage?: string }>;
 };
 
 const leadStatus: Record<string, string> = {
@@ -3039,6 +3045,9 @@ const leadStatus: Record<string, string> = {
   CUSTOMER: "Клиент",
   REJECTED: "Отказ",
 };
+
+const telegramUrl = (value: string) => value.startsWith("http") ? value : `https://t.me/${value.replace(/^@/, "")}`;
+const whatsappUrl = (value: string) => value.startsWith("http") ? value : `https://wa.me/${value.replace(/\D/g, "")}`;
 
 export function LeadAgent() {
   const [overview, setOverview] = useState<LeadOverview | null>(null);
@@ -3056,6 +3065,11 @@ export function LeadAgent() {
     }
   };
   useEffect(() => void load(), []);
+  useEffect(() => {
+    if (overview?.runs[0]?.status !== "RUNNING") return;
+    const timer = setInterval(() => void load(), 10000);
+    return () => clearInterval(timer);
+  }, [overview?.runs[0]?.status]);
   const changeStatus = async (id: string, next: string) => {
     try {
       await mutate(`/lead-agent/candidates/${id}/status`, { status: next });
@@ -3068,6 +3082,7 @@ export function LeadAgent() {
     try {
       await mutate("/lead-agent/runs", {});
       await load();
+      Alert.alert("Поиск начат", "Агент ищет и проверяет компании. Результаты появятся в карточках через несколько минут.");
     } catch (e) {
       Alert.alert("Поиск пока недоступен", (e as Error).message);
     }
@@ -3085,6 +3100,10 @@ export function LeadAgent() {
         </View>
         <Row label="Параметры поиска" value={overview?.readiness.parametersReady ? "Готовы" : "Ожидаются"} />
         <Row label="OpenAI" value={overview?.readiness.providerReady ? "Подключён" : "Не подключён"} />
+        <Row label="Продукция" value={overview?.config.productNames.join(", ") || "—"} />
+        <Row label="Страны" value={overview?.config.countries.join(", ") || "—"} />
+        <Row label="Минимальная партия" value={`${overview?.config.minimumOrderKg ?? 0} кг`} />
+        <Row label="Посредники" value="Исключены" />
         {!!overview?.readiness.missing.length && (
           <View style={{ marginTop: 8 }}>
             <Text style={s.label}>Нужно указать позже</Text>
@@ -3095,6 +3114,8 @@ export function LeadAgent() {
         )}
         <Btn title="Начать поиск" onPress={start} disabled={!overview?.readiness.parametersReady || !overview?.readiness.providerReady} />
         <Text style={[s.muted, { marginTop: 10 }]}>Сообщения кандидатам не отправляются автоматически. Сначала владелец проверяет компанию.</Text>
+        {overview?.runs[0]?.status === "RUNNING" && <Text style={[s.muted, { marginTop: 8 }]}>Поиск выполняется… Обновите экран через несколько минут.</Text>}
+        {overview?.runs[0]?.status === "FAILED" && <Text style={[s.error, { marginTop: 8 }]}>Последний поиск завершился ошибкой: {overview.runs[0].errorMessage}</Text>}
       </Card>
       {error ? <Text style={s.error}>{error}</Text> : null}
       <Text style={s.section}>Кандидаты · {overview?.candidates.length ?? 0}</Text>
@@ -3111,7 +3132,28 @@ export function LeadAgent() {
           <Row label="Статус" value={leadStatus[lead.status] ?? lead.status} />
           {!!lead.contactEmail && <Row label="E-mail" value={lead.contactEmail} />}
           {!!lead.contactPhone && <Row label="Телефон" value={lead.contactPhone} />}
+          {!!lead.contactTelegram && <Btn title="Открыть Telegram" secondary onPress={() => void Linking.openURL(telegramUrl(lead.contactTelegram!))} />}
+          {!!lead.contactWhatsapp && <Btn title="Открыть WhatsApp" secondary onPress={() => void Linking.openURL(whatsappUrl(lead.contactWhatsapp!))} />}
+          {!!lead.contactEmail && <Btn title="Написать по почте" secondary onPress={() => void Linking.openURL(`mailto:${lead.contactEmail}?subject=${encodeURIComponent("Предложение от MRBA")}&body=${encodeURIComponent(lead.outreachText || "")}`)} />}
           <Btn title="Открыть сайт" secondary onPress={() => void Linking.openURL(lead.website)} />
+          {!!lead.outreachText && (
+            <View style={{ marginTop: 12 }}>
+              <Text style={s.label}>Текст обращения · {lead.outreachLanguage || "язык сайта"}</Text>
+              <Text style={s.text}>{lead.outreachText}</Text>
+              <Btn title="Поделиться текстом" secondary onPress={() => void Share.share({ message: lead.outreachText! })} />
+            </View>
+          )}
+          {!!lead.evidence.length && (
+            <View style={{ marginTop: 12 }}>
+              <Text style={s.label}>Источники</Text>
+              {lead.evidence.map((source, index) => (
+                <Pressable key={source.id} onPress={() => void Linking.openURL(source.url)} style={{ paddingVertical: 7 }}>
+                  <Text style={{ color: c.blue, fontWeight: "600" }}>{index + 1}. {source.title || source.url}</Text>
+                  {!!source.excerpt && <Text style={s.muted}>{source.excerpt}</Text>}
+                </Pressable>
+              ))}
+            </View>
+          )}
           <View style={s.chips}>
             {(["VERIFIED", "CONTACTED", "NEGOTIATION", "REJECTED"] as const).map((next) => (
               <Pressable key={next} style={[s.chip, lead.status === next && s.chipOn]} onPress={() => void changeStatus(lead.id, next)}>

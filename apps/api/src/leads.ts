@@ -26,6 +26,19 @@ import { AccessGuard, Allow, AuthRequest } from "./identity";
 import { Database } from "./db";
 import { OperationsService } from "./operations";
 
+const defaultLeadConfig = {
+  productNames: ["Латунные прутки", "Медные прутки"],
+  countries: ["Узбекистан", "Казахстан", "Таджикистан", "Кыргызстан"],
+  minimumOrderKg: 1000,
+  buyerTypes: [
+    "Промышленные заводы",
+    "Производственные цеха",
+    "Предприятия, использующие латунные или медные прутки в производстве",
+  ],
+  outreachLanguages: ["Определять по языку сайта компании"],
+  intermediaryMode: "MANUFACTURERS_ONLY",
+} as const;
+
 const leadStatuses = [
   "NEW",
   "VERIFIED",
@@ -37,6 +50,7 @@ const leadStatuses = [
 
 class LeadAgentConfigDto {
   @IsArray() @ArrayMaxSize(50) @IsUUID("4", { each: true }) productIds!: string[];
+  @IsArray() @ArrayMaxSize(50) @IsString({ each: true }) productNames!: string[];
   @IsArray() @ArrayMaxSize(50) @IsString({ each: true }) countries!: string[];
   @IsOptional() @IsInt() @Min(1) @Max(1000000000) minimumOrderKg?: number;
   @IsArray() @ArrayMaxSize(50) @IsString({ each: true }) buyerTypes!: string[];
@@ -53,6 +67,96 @@ class LeadStatusDto {
 const clean = (values: string[]) =>
   [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 
+type DiscoveredLead = {
+  companyName: string;
+  website: string;
+  country: string;
+  city: string;
+  industry: string;
+  score: number;
+  scoreExplanation: string;
+  contactEmail: string;
+  contactPhone: string;
+  contactTelegram: string;
+  contactWhatsapp: string;
+  outreachLanguage: string;
+  outreachText: string;
+  evidence: Array<{ url: string; title: string; excerpt: string }>;
+};
+
+const normalizeWebsite = (value: string) => {
+  const url = new URL(value);
+  return url.hostname.toLowerCase().replace(/^www\./, "");
+};
+
+const leadSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["candidates"],
+  properties: {
+    candidates: {
+      type: "array",
+      maxItems: 15,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["companyName", "website", "country", "city", "industry", "score", "scoreExplanation", "contactEmail", "contactPhone", "contactTelegram", "contactWhatsapp", "outreachLanguage", "outreachText", "evidence"],
+        properties: {
+          companyName: { type: "string" },
+          website: { type: "string" },
+          country: { type: "string" },
+          city: { type: "string" },
+          industry: { type: "string" },
+          score: { type: "integer", minimum: 0, maximum: 100 },
+          scoreExplanation: { type: "string" },
+          contactEmail: { type: "string" },
+          contactPhone: { type: "string" },
+          contactTelegram: { type: "string" },
+          contactWhatsapp: { type: "string" },
+          outreachLanguage: { type: "string" },
+          outreachText: { type: "string" },
+          evidence: {
+            type: "array",
+            minItems: 1,
+            maxItems: 5,
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["url", "title", "excerpt"],
+              properties: {
+                url: { type: "string" },
+                title: { type: "string" },
+                excerpt: { type: "string" },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+};
+
+async function discoverLeads(config: any): Promise<DiscoveredLead[]> {
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+    body: JSON.stringify({
+      model: process.env.OPENAI_MODEL || "gpt-5.4-mini",
+      tools: [{ type: "web_search", search_context_size: "medium" }],
+      tool_choice: "auto",
+      text: { format: { type: "json_schema", name: "mrba_lead_candidates", strict: true, schema: leadSchema } },
+      input: `Найди до 15 реальных потенциальных покупателей продукции MRBA.\nПродукция: ${config.productNames.join(", ")}.\nСтраны: ${config.countries.join(", ")}.\nМинимальная партия: ${config.minimumOrderKg} кг.\nТипы покупателей: ${config.buyerTypes.join(", ")}.\nИскать только конечных промышленных потребителей и производителей; посредников, трейдеров, магазины и каталоги как кандидатов исключить. Каталоги можно использовать только как источник для обнаружения официального сайта. Сохраняй компанию только если на официальном сайте или подтверждённой странице найден хотя бы один прямой контакт: email, Telegram или WhatsApp. Не придумывай контакты. Телефон без WhatsApp не удовлетворяет обязательному условию, но его можно сохранить дополнительно. Для каждой компании укажи конкретные URL-доказательства, почему ей нужны медные или латунные прутки и где найден контакт. Определи язык сайта и составь короткий персональный текст первого обращения на этом языке. Не отправляй сообщения.`,
+    }),
+    signal: AbortSignal.timeout(180000),
+  });
+  if (!response.ok) throw new Error(`OpenAI: ${response.status} ${await response.text()}`);
+  const payload = await response.json() as any;
+  const outputText = payload.output_text ?? payload.output?.flatMap((item: any) => item.content ?? []).find((item: any) => item.type === "output_text")?.text;
+  if (!outputText) throw new Error("OpenAI не вернул результат поиска");
+  const parsed = JSON.parse(outputText) as { candidates: DiscoveredLead[] };
+  return parsed.candidates.filter((lead) => lead.contactEmail || lead.contactTelegram || lead.contactWhatsapp);
+}
+
 @Controller("lead-agent")
 @UseGuards(AccessGuard)
 export class LeadAgentController {
@@ -64,8 +168,9 @@ export class LeadAgentController {
   @Get("overview")
   @Allow("factory.write")
   async overview() {
-    const [config, candidates, runs, products] = await Promise.all([
-      this.db.leadAgentConfig.findUnique({ where: { id: "default" } }),
+    let config = await this.db.leadAgentConfig.findUnique({ where: { id: "default" } });
+    if (!config) config = await this.db.leadAgentConfig.create({ data: { id: "default", productNames: [...defaultLeadConfig.productNames], countries: [...defaultLeadConfig.countries], minimumOrderKg: defaultLeadConfig.minimumOrderKg, buyerTypes: [...defaultLeadConfig.buyerTypes], outreachLanguages: [...defaultLeadConfig.outreachLanguages], intermediaryMode: defaultLeadConfig.intermediaryMode } });
+    const [candidates, runs, products] = await Promise.all([
       this.db.leadCandidate.findMany({
         orderBy: [{ score: "desc" }, { createdAt: "desc" }],
         take: 100,
@@ -75,7 +180,7 @@ export class LeadAgentController {
       this.db.item.findMany({ where: { kind: "PRODUCT", isActive: true }, orderBy: { name: "asc" } }),
     ]);
     const missing = [
-      !config?.productIds.length && "Продукция",
+      !config?.productNames.length && !config?.productIds.length && "Продукция",
       !config?.countries.length && "Страны поиска",
       !config?.minimumOrderKg && "Минимальная партия",
       !config?.buyerTypes.length && "Тип покупателя",
@@ -105,6 +210,7 @@ export class LeadAgentController {
   ) {
     const normalized = {
       ...dto,
+      productNames: clean(dto.productNames),
       countries: clean(dto.countries),
       buyerTypes: clean(dto.buyerTypes),
       outreachLanguages: clean(dto.outreachLanguages),
@@ -112,6 +218,7 @@ export class LeadAgentController {
     return this.ops.command(req.actor.id, id, epoch, "LEAD_AGENT_CONFIG", normalized, async (tx) => {
       const products = await tx.item.count({ where: { id: { in: normalized.productIds }, kind: "PRODUCT", isActive: true } });
       if (products !== normalized.productIds.length) throw new BadRequestException("Выберите действующую готовую продукцию");
+      if (!normalized.productNames.length && !normalized.productIds.length) throw new BadRequestException("Укажите продукцию для поиска");
       const row = await tx.leadAgentConfig.upsert({
         where: { id: "default" },
         create: { id: "default", ...normalized },
@@ -129,11 +236,39 @@ export class LeadAgentController {
     @Headers("x-recovery-epoch") epoch: string,
   ) {
     const config = await this.db.leadAgentConfig.findUnique({ where: { id: "default" } });
-    if (!config || !config.productIds.length || !config.countries.length || !config.minimumOrderKg || !config.buyerTypes.length || !config.outreachLanguages.length || config.intermediaryMode === "UNDECIDED")
+    if (!config || (!config.productNames.length && !config.productIds.length) || !config.countries.length || !config.minimumOrderKg || !config.buyerTypes.length || !config.outreachLanguages.length || config.intermediaryMode === "UNDECIDED")
       throw new BadRequestException("Сначала заполните параметры поиска клиентов");
     if (!process.env.OPENAI_API_KEY)
       throw new BadRequestException("OpenAI API ещё не подключён");
-    throw new BadRequestException("Исполнитель интернет-поиска будет подключён после передачи API-ключа");
+    const runResult = await this.ops.command(req.actor.id, id, epoch, "LEAD_SEARCH_RUN", { configId: config.id, updatedAt: config.updatedAt.toISOString() }, async (tx) => {
+      const run = await tx.leadSearchRun.create({ data: { createdBy: req.actor.id, status: "RUNNING", startedAt: new Date(), criteria: config as any } });
+      return { id: run.id };
+    }) as { id: string };
+    void this.executeRun(runResult.id, config);
+    return { id: runResult.id, status: "RUNNING" };
+  }
+
+  private async executeRun(runId: string, config: any) {
+    try {
+      const leads = await discoverLeads(config);
+      await this.db.$transaction(async (tx) => {
+        for (const lead of leads) {
+          let normalizedWebsite: string;
+          try { normalizedWebsite = normalizeWebsite(lead.website); } catch { continue; }
+          const candidate = await tx.leadCandidate.upsert({
+            where: { normalizedWebsite },
+            create: { runId, companyName: lead.companyName, normalizedWebsite, website: lead.website, country: lead.country || null, city: lead.city || null, industry: lead.industry || null, score: lead.score, scoreExplanation: lead.scoreExplanation, contactEmail: lead.contactEmail || null, contactPhone: lead.contactPhone || null, contactTelegram: lead.contactTelegram || null, contactWhatsapp: lead.contactWhatsapp || null, outreachLanguage: lead.outreachLanguage || null, outreachText: lead.outreachText || null, lastVerifiedAt: new Date() },
+            update: { runId, companyName: lead.companyName, website: lead.website, country: lead.country || null, city: lead.city || null, industry: lead.industry || null, score: lead.score, scoreExplanation: lead.scoreExplanation, contactEmail: lead.contactEmail || null, contactPhone: lead.contactPhone || null, contactTelegram: lead.contactTelegram || null, contactWhatsapp: lead.contactWhatsapp || null, outreachLanguage: lead.outreachLanguage || null, outreachText: lead.outreachText || null, lastVerifiedAt: new Date() },
+          });
+          await tx.leadEvidence.deleteMany({ where: { candidateId: candidate.id } });
+          if (lead.evidence.length) await tx.leadEvidence.createMany({ data: lead.evidence.map((e) => ({ candidateId: candidate.id, url: e.url, title: e.title || null, excerpt: e.excerpt || null, verifiedAt: new Date() })) });
+        }
+        await tx.leadSearchRun.update({ where: { id: runId }, data: { status: "COMPLETED", completedAt: new Date() } });
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message.slice(0, 1000) : "Неизвестная ошибка";
+      await this.db.leadSearchRun.update({ where: { id: runId }, data: { status: "FAILED", errorMessage: message, completedAt: new Date() } });
+    }
   }
 
   @Post("candidates/:id/status")
