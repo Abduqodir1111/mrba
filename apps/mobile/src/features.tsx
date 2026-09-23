@@ -3146,6 +3146,7 @@ export function LeadAgent() {
           <Row label="Статус" value={leadStatus[lead.status] ?? lead.status} />
           {!!lead.contactEmail && <Row label="E-mail" value={lead.contactEmail} />}
           {!!lead.contactPhone && <Row label="Телефон" value={lead.contactPhone} />}
+          {!!lead.contactPhone && <Btn title="Позвонить" secondary onPress={() => void Linking.openURL(`tel:${lead.contactPhone!.replace(/[^+\d]/g, "")}`)} />}
           {!!lead.contactTelegram && <Btn title="Открыть Telegram" secondary onPress={() => void Linking.openURL(telegramUrl(lead.contactTelegram!))} />}
           {!!lead.contactWhatsapp && <Btn title="Открыть WhatsApp" secondary onPress={() => void Linking.openURL(whatsappUrl(lead.contactWhatsapp!))} />}
           {!!lead.contactEmail && <Btn title="Написать по почте" secondary onPress={() => void Linking.openURL(`mailto:${lead.contactEmail}?subject=${encodeURIComponent("Предложение от MRBA")}&body=${encodeURIComponent(lead.outreachText || "")}`)} />}

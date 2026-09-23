@@ -93,6 +93,27 @@ const normalizeWebsite = (value: string) => {
   return url.hostname.toLowerCase().replace(/^www\./, "");
 };
 
+const verifiedTelegramUrl = (value: string) => {
+  if (!value) return null;
+  try {
+    const url = new URL(value.startsWith("http") ? value : `https://t.me/${value.replace(/^@/, "")}`);
+    if (!["t.me", "telegram.me", "www.t.me", "www.telegram.me"].includes(url.hostname.toLowerCase())) return null;
+    const username = url.pathname.split("/").filter(Boolean)[0];
+    return username && !["share", "joinchat"].includes(username.toLowerCase()) ? `https://t.me/${username}` : null;
+  } catch { return null; }
+};
+
+const verifiedWhatsappUrl = (value: string) => {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase();
+    if (!["wa.me", "www.wa.me", "api.whatsapp.com", "www.whatsapp.com"].includes(host)) return null;
+    const number = host.includes("whatsapp.com") ? url.searchParams.get("phone")?.replace(/\D/g, "") : url.pathname.replace(/\D/g, "");
+    return number ? `https://wa.me/${number}` : null;
+  } catch { return null; }
+};
+
 const leadSchema = {
   type: "object",
   additionalProperties: false,
@@ -151,7 +172,7 @@ async function discoverLeads(config: any, limit: number): Promise<DiscoveredLead
       tools: [{ type: "web_search", search_context_size: "medium" }],
       tool_choice: "auto",
       text: { format: { type: "json_schema", name: "mrba_lead_candidates", strict: true, schema: responseSchema } },
-      input: `Найди до ${limit} реальных потенциальных покупателей продукции MRBA.\nПродукция: ${config.productNames.join(", ")}.\nСтраны: ${config.countries.join(", ")}.\nМинимальная партия: ${config.minimumOrderKg} кг.\nТипы покупателей: ${config.buyerTypes.join(", ")}.\nИскать только конечных промышленных потребителей и производителей; посредников, трейдеров, магазины и каталоги как кандидатов исключить. Каталоги можно использовать только как источник для обнаружения официального сайта. Сохраняй компанию только если на официальном сайте или подтверждённой странице найден хотя бы один прямой контакт: email, Telegram или WhatsApp. Не придумывай контакты. Телефон без WhatsApp не удовлетворяет обязательному условию, но его можно сохранить дополнительно. Для каждой компании укажи конкретные URL-доказательства, почему ей нужны медные или латунные прутки и где найден контакт. Определи язык сайта и составь короткий персональный текст первого обращения на этом языке. Не отправляй сообщения.`,
+      input: `Найди до ${limit} реальных потенциальных покупателей продукции MRBA.\nПродукция: ${config.productNames.join(", ")}.\nСтраны: ${config.countries.join(", ")}.\nМинимальная партия: ${config.minimumOrderKg} кг.\nТипы покупателей: ${config.buyerTypes.join(", ")}.\nИскать только конечных промышленных потребителей и производителей; посредников, трейдеров, магазины и каталоги как кандидатов исключить. Каталоги можно использовать только как источник для обнаружения официального сайта. Сохраняй компанию только если на официальном сайте или подтверждённой странице найден хотя бы один прямой контакт: email, Telegram или WhatsApp. Не придумывай контакты. Если найден телефон, обязательно проверь страницы контактов и социальные ссылки компании: contactWhatsapp заполняй только полной явной ссылкой wa.me или whatsapp.com, опубликованной компанией; contactTelegram — только явной ссылкой t.me или telegram.me. Не считай обычный номер подтверждённым WhatsApp и не пытайся угадывать Telegram по номеру. Если канал не подтверждён, верни пустую строку. Добавь в evidence страницу, где опубликована каждая подтверждённая ссылка. Телефон без WhatsApp можно сохранить дополнительно. Для каждой компании укажи конкретные URL-доказательства, почему ей нужны медные или латунные прутки и где найден контакт. Определи язык сайта и составь короткий персональный текст первого обращения на этом языке. Не отправляй сообщения.`,
     }),
     signal: AbortSignal.timeout(180000),
   });
@@ -160,7 +181,11 @@ async function discoverLeads(config: any, limit: number): Promise<DiscoveredLead
   const outputText = payload.output_text ?? payload.output?.flatMap((item: any) => item.content ?? []).find((item: any) => item.type === "output_text")?.text;
   if (!outputText) throw new Error("OpenAI не вернул результат поиска");
   const parsed = JSON.parse(outputText) as { candidates: DiscoveredLead[] };
-  return parsed.candidates.filter((lead) => lead.contactEmail || lead.contactTelegram || lead.contactWhatsapp);
+  return parsed.candidates.map((lead) => ({
+    ...lead,
+    contactTelegram: verifiedTelegramUrl(lead.contactTelegram) || "",
+    contactWhatsapp: verifiedWhatsappUrl(lead.contactWhatsapp) || "",
+  })).filter((lead) => lead.contactEmail || lead.contactTelegram || lead.contactWhatsapp);
 }
 
 @Controller("lead-agent")
