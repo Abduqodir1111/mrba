@@ -415,6 +415,10 @@ model LeadCandidate {
   country String?
   city String?
   industry String?
+  companySize String?
+  estimatedOrderKg Int?
+  fitReasons String[] @default([])
+  riskFlags String[] @default([])
   score Int
   scoreExplanation String
   status String @default("NEW")
@@ -426,6 +430,9 @@ model LeadCandidate {
   contactWhatsapp String?
   outreachLanguage String?
   outreachText String?
+  internalNotes String?
+  nextContactAt DateTime? @db.Timestamptz
+  lastContactedAt DateTime? @db.Timestamptz
   lastVerifiedAt DateTime @db.Timestamptz
   createdAt DateTime @default(now()) @db.Timestamptz
   updatedAt DateTime @updatedAt @db.Timestamptz

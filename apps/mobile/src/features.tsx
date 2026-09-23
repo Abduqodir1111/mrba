@@ -3025,16 +3025,27 @@ type LeadOverview = {
     country?: string;
     city?: string;
     industry?: string;
+    companySize?: string;
+    estimatedOrderKg?: number;
+    fitReasons: string[];
+    riskFlags: string[];
     score: number;
     scoreExplanation: string;
     status: string;
     contactEmail?: string;
     contactPhone?: string;
+    contactName?: string;
+    contactRole?: string;
     contactTelegram?: string;
     contactWhatsapp?: string;
     outreachLanguage?: string;
     outreachText?: string;
+    internalNotes?: string;
+    nextContactAt?: string;
+    lastContactedAt?: string;
+    lastVerifiedAt: string;
     evidence: Array<{ id: string; url: string; title?: string; excerpt?: string }>;
+    statusEvents: Array<{ id: string; status: string; note?: string; createdAt: string; actor: { name: string } }>;
   }>;
   runs: Array<{ id: string; status: string; progressStage: string; targetCount: number; foundCount: number; createdAt: string; startedAt?: string; completedAt?: string; errorMessage?: string }>;
 };
@@ -3043,6 +3054,8 @@ const leadStatus: Record<string, string> = {
   NEW: "Новый",
   VERIFIED: "Проверен",
   CONTACTED: "Связались",
+  RESPONDED: "Ответил",
+  QUOTE_REQUESTED: "Запросил цену",
   NEGOTIATION: "Переговоры",
   CUSTOMER: "Клиент",
   REJECTED: "Отказ",
@@ -3057,6 +3070,10 @@ export function LeadAgent() {
   const [error, setError] = useState("");
   const [candidateLimit, setCandidateLimit] = useState("1");
   const [clock, setClock] = useState(Date.now());
+  const [expandedLeadId, setExpandedLeadId] = useState<string | null>(null);
+  const [noteLeadId, setNoteLeadId] = useState<string | null>(null);
+  const [noteText, setNoteText] = useState("");
+  const [nextContactDate, setNextContactDate] = useState("");
   const load = async () => {
     setBusy(true);
     try {
@@ -3078,7 +3095,9 @@ export function LeadAgent() {
     return () => clearInterval(timer);
   }, [overview?.runs[0]?.status]);
   const activeRun = overview?.runs[0];
-  const progress = activeRun?.progressStage === "SAVING" ? 88 : activeRun?.status === "COMPLETED" ? 100 : 34;
+  const stageProgress: Record<string, number> = { DISCOVERING: 20, EXPANDING: 35, VALIDATING: 58, SCORING: 78, SAVING: 92, COMPLETED: 100 };
+  const progress = activeRun ? (stageProgress[activeRun.progressStage] ?? 12) : 0;
+  const stageLabel: Record<string, string> = { DISCOVERING: "Ищем предприятия", EXPANDING: "Ищем дополнительные компании", VALIDATING: "Проверяем сайты и контакты", SCORING: "Оцениваем кандидатов", SAVING: "Сохраняем результаты" };
   const elapsedSeconds = activeRun?.startedAt ? Math.max(0, Math.floor((clock - new Date(activeRun.startedAt).getTime()) / 1000)) : 0;
   const changeStatus = async (id: string, next: string) => {
     try {
@@ -3111,6 +3130,34 @@ export function LeadAgent() {
       Alert.alert("Не удалось отменить поиск", (e as Error).message);
     }
   };
+  const saveLeadNote = async (id: string) => {
+    const note = noteText.trim();
+    if (!note) return Alert.alert("Добавьте заметку", "Напишите результат разговора или следующий шаг.");
+    if (nextContactDate && !/^\d{4}-\d{2}-\d{2}$/.test(nextContactDate)) return Alert.alert("Проверьте дату", "Используйте формат ГГГГ-ММ-ДД.");
+    try {
+      await mutate(`/lead-agent/candidates/${id}/note`, { note, nextContactAt: nextContactDate ? new Date(`${nextContactDate}T09:00:00+05:00`).toISOString() : undefined });
+      setNoteText("");
+      setNextContactDate("");
+      setNoteLeadId(null);
+      await load();
+    } catch (e) {
+      Alert.alert("Не удалось сохранить", (e as Error).message);
+    }
+  };
+  const promoteLead = async (id: string) => {
+    try {
+      await mutate(`/lead-agent/candidates/${id}/promote`, {});
+      await load();
+      Alert.alert("Клиент добавлен", "Компания перенесена в справочник клиентов.");
+    } catch (e) {
+      Alert.alert("Не удалось добавить клиента", (e as Error).message);
+    }
+  };
+  const funnel = {
+    new: overview?.candidates.filter((lead) => ["NEW", "VERIFIED"].includes(lead.status)).length ?? 0,
+    active: overview?.candidates.filter((lead) => ["CONTACTED", "RESPONDED", "QUOTE_REQUESTED", "NEGOTIATION"].includes(lead.status)).length ?? 0,
+    customers: overview?.candidates.filter((lead) => lead.status === "CUSTOMER").length ?? 0,
+  };
   if (busy && !overview) return <ActivityIndicator color={c.blue} />;
   return (
     <View>
@@ -3123,7 +3170,7 @@ export function LeadAgent() {
             <View style={s.searchProgressTitle}>
               <Text style={s.searchProgressEyebrow}>ИИ-АГЕНТ РАБОТАЕТ</Text>
               <Text style={s.searchProgressHeading} numberOfLines={1}>
-                {activeRun.progressStage === "SAVING" ? "Сохраняем результаты" : "Ищем новых клиентов"}
+                {stageLabel[activeRun.progressStage] || "Готовим поиск"}
               </Text>
             </View>
             <View style={s.searchCountPill}>
@@ -3147,9 +3194,9 @@ export function LeadAgent() {
             </View>
           </View>
           <Text style={s.searchProgressHint} numberOfLines={2}>
-            {activeRun.progressStage === "SAVING"
-              ? "Проверяем контакты и создаём карточки кандидатов"
-              : "Ищем компании, проверяем продукцию и открытые контакты"}
+            {activeRun.progressStage === "SCORING" || activeRun.progressStage === "SAVING"
+              ? "Считаем рейтинг и создаём карточки лучших кандидатов"
+              : "Проверяем производство, потребность, ответственных сотрудников и контакты"}
           </Text>
           <Pressable style={s.cancelSearchButton} onPress={() => void cancelSearch()}>
             <Ionicons name="stop-circle-outline" size={18} color="#B84040" />
@@ -3221,6 +3268,15 @@ export function LeadAgent() {
         {overview?.runs[0]?.status === "FAILED" && <Text style={[s.error, { marginTop: 8 }]}>Последний поиск завершился ошибкой: {overview.runs[0].errorMessage}</Text>}
       </Card>
       {error ? <Text style={s.error}>{error}</Text> : null}
+      {!!overview?.candidates.length && (
+        <View style={s.leadFunnel}>
+          <View style={s.leadFunnelItem}><Text style={s.leadFunnelValue}>{funnel.new}</Text><Text style={s.leadFunnelLabel}>Новые</Text></View>
+          <View style={s.leadFunnelDivider} />
+          <View style={s.leadFunnelItem}><Text style={s.leadFunnelValue}>{funnel.active}</Text><Text style={s.leadFunnelLabel}>В работе</Text></View>
+          <View style={s.leadFunnelDivider} />
+          <View style={s.leadFunnelItem}><Text style={[s.leadFunnelValue, { color: c.green }]}>{funnel.customers}</Text><Text style={s.leadFunnelLabel}>Клиенты</Text></View>
+        </View>
+      )}
       <Text style={s.section}>Кандидаты · {overview?.candidates.length ?? 0}</Text>
       {!overview?.candidates.length ? (
         <Empty text="После настройки здесь появятся компании, рейтинг, контакты и ссылки на источники." />
@@ -3254,8 +3310,19 @@ export function LeadAgent() {
             </View>
           </View>
           <Text style={s.leadExplanation} numberOfLines={3}>{lead.scoreExplanation}</Text>
+          <View style={s.leadIntelligenceRow}>
+            {!!lead.companySize && <View style={s.leadIntelligencePill}><Ionicons name="business-outline" size={13} color={c.blue} /><Text style={s.leadIntelligenceText}>{lead.companySize.split(":")[0]}</Text></View>}
+            {!!lead.estimatedOrderKg && <View style={s.leadIntelligencePill}><Ionicons name="scale-outline" size={13} color={c.green} /><Text style={s.leadIntelligenceText}>≈ {lead.estimatedOrderKg.toLocaleString("ru-RU")} кг</Text></View>}
+            <View style={s.leadIntelligencePill}><Ionicons name="checkmark-circle-outline" size={13} color={c.green} /><Text style={s.leadIntelligenceText}>Проверен {new Date(lead.lastVerifiedAt).toLocaleDateString("ru-RU")}</Text></View>
+          </View>
           {(lead.contactEmail || lead.contactPhone) && (
             <View style={s.leadContacts}>
+              {(lead.contactName || lead.contactRole) && (
+                <View style={s.leadContactLine}>
+                  <Ionicons name="person-outline" size={15} color={c.muted} />
+                  <Text style={s.leadContactText} numberOfLines={1}>{[lead.contactName, lead.contactRole].filter(Boolean).join(" · ")}</Text>
+                </View>
+              )}
               {!!lead.contactEmail && (
                 <View style={s.leadContactLine}>
                   <Ionicons name="mail-outline" size={15} color={c.muted} />
@@ -3288,7 +3355,21 @@ export function LeadAgent() {
             {!lead.contactPhone && !!lead.contactWhatsapp && <Pressable style={s.leadAction} onPress={() => void Linking.openURL(whatsappUrl(lead.contactWhatsapp!))}><Ionicons name="logo-whatsapp" size={17} color={c.green} /><Text style={s.leadActionText}>WhatsApp</Text></Pressable>}
             {!!lead.contactEmail && <Pressable style={s.leadAction} onPress={() => void Linking.openURL(`mailto:${lead.contactEmail}?subject=${encodeURIComponent("Предложение от MRBA")}&body=${encodeURIComponent(lead.outreachText || "")}`)}><Ionicons name="mail-outline" size={17} color={c.blue} /><Text style={s.leadActionText}>Почта</Text></Pressable>}
             <Pressable style={s.leadAction} onPress={() => void Linking.openURL(lead.website)}><Ionicons name="globe-outline" size={17} color={c.blue} /><Text style={s.leadActionText}>Сайт</Text></Pressable>
+            <Pressable style={s.leadAction} onPress={() => setExpandedLeadId(expandedLeadId === lead.id ? null : lead.id)}><Ionicons name={expandedLeadId === lead.id ? "chevron-up" : "chevron-down"} size={17} color={c.blue} /><Text style={s.leadActionText}>{expandedLeadId === lead.id ? "Скрыть" : "Подробнее"}</Text></Pressable>
           </View>
+          {expandedLeadId === lead.id && <>
+          {!!lead.fitReasons.length && (
+            <View style={s.leadDetailBox}>
+              <Text style={s.leadSmallTitle}>Почему подходит</Text>
+              {lead.fitReasons.map((reason) => <Text key={reason} style={s.leadDetailLine}>✓ {reason}</Text>)}
+            </View>
+          )}
+          {!!lead.riskFlags.length && (
+            <View style={[s.leadDetailBox, s.leadRiskBox]}>
+              <Text style={s.leadSmallTitle}>Что нужно уточнить</Text>
+              {lead.riskFlags.map((risk) => <Text key={risk} style={s.leadRiskLine}>• {risk}</Text>)}
+            </View>
+          )}
           {!!lead.outreachText && (
             <View style={s.leadMessageBox}>
               <View style={s.leadMessageHeader}>
@@ -3297,7 +3378,7 @@ export function LeadAgent() {
                   <Ionicons name="share-outline" size={16} color={c.blue} />
                 </Pressable>
               </View>
-              <Text style={s.leadMessageText} numberOfLines={4}>{lead.outreachText}</Text>
+              <Text style={s.leadMessageText}>{lead.outreachText}</Text>
             </View>
           )}
           {!!lead.evidence.length && (
@@ -3311,14 +3392,47 @@ export function LeadAgent() {
               ))}
             </View>
           )}
+          {!!lead.statusEvents.length && (
+            <View style={s.leadHistory}>
+              <Text style={s.leadSmallTitle}>История работы</Text>
+              {lead.statusEvents.slice(0, 5).map((event) => (
+                <View key={event.id} style={s.leadHistoryLine}>
+                  <View style={s.leadHistoryDot} />
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={s.leadHistoryTitle}>{leadStatus[event.status] || event.status} · {new Date(event.createdAt).toLocaleDateString("ru-RU")}</Text>
+                    {!!event.note && <Text style={s.leadHistoryNote}>{event.note}</Text>}
+                  </View>
+                </View>
+              ))}
+            </View>
+          )}
+          {noteLeadId === lead.id ? (
+            <View style={s.leadNoteForm}>
+              <TextInput style={[s.input, s.leadNoteInput]} value={noteText} onChangeText={setNoteText} placeholder="Результат разговора или следующий шаг" multiline />
+              <TextInput style={s.input} value={nextContactDate} onChangeText={setNextContactDate} placeholder="Следующий контакт: ГГГГ-ММ-ДД" keyboardType="numbers-and-punctuation" />
+              <View style={s.leadNoteActions}>
+                <Pressable style={s.leadNoteCancel} onPress={() => { setNoteLeadId(null); setNoteText(""); setNextContactDate(""); }}><Text style={s.leadNoteCancelText}>Отмена</Text></Pressable>
+                <Pressable style={s.leadNoteSave} onPress={() => void saveLeadNote(lead.id)}><Text style={s.leadNoteSaveText}>Сохранить</Text></Pressable>
+              </View>
+            </View>
+          ) : (
+            <Pressable style={s.leadAddNote} onPress={() => setNoteLeadId(lead.id)}><Ionicons name="add-circle-outline" size={17} color={c.blue} /><Text style={s.leadActionText}>Добавить заметку</Text></Pressable>
+          )}
+          </>}
           <Text style={s.leadSmallTitle}>Изменить статус</Text>
           <View style={s.leadStatusOptions}>
-            {(["VERIFIED", "CONTACTED", "NEGOTIATION", "REJECTED"] as const).map((next) => (
+            {(["VERIFIED", "CONTACTED", "RESPONDED", "QUOTE_REQUESTED", "NEGOTIATION", "REJECTED"] as const).map((next) => (
               <Pressable key={next} style={[s.leadStatusOption, lead.status === next && s.leadStatusOptionOn]} onPress={() => void changeStatus(lead.id, next)}>
                 <Text style={[s.leadStatusOptionText, lead.status === next && s.leadStatusOptionTextOn]}>{leadStatus[next]}</Text>
               </Pressable>
             ))}
           </View>
+          {["RESPONDED", "QUOTE_REQUESTED", "NEGOTIATION"].includes(lead.status) && (
+            <Pressable style={s.leadPromoteButton} onPress={() => void promoteLead(lead.id)}>
+              <Ionicons name="person-add-outline" size={17} color={c.white} />
+              <Text style={s.leadPromoteText}>Добавить в клиенты</Text>
+            </Pressable>
+          )}
         </Card>
         );
       })}
@@ -3382,6 +3496,11 @@ const s = StyleSheet.create({
   },
   leadSafetyNote: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, marginTop: 10 },
   leadSafetyText: { flexShrink: 1, textAlign: "center", fontSize: 11, lineHeight: 16, color: c.muted },
+  leadFunnel: { flexDirection: "row", alignItems: "center", marginBottom: 12, paddingVertical: 10, paddingHorizontal: 8, borderRadius: 14, backgroundColor: c.white, borderWidth: 1, borderColor: c.line },
+  leadFunnelItem: { flex: 1, alignItems: "center" },
+  leadFunnelValue: { fontSize: 17, lineHeight: 20, fontWeight: "800", color: c.blue },
+  leadFunnelLabel: { marginTop: 1, fontSize: 9, fontWeight: "600", color: c.muted },
+  leadFunnelDivider: { width: 1, height: 24, backgroundColor: c.line },
   leadCard: { padding: 14, borderRadius: 18 },
   newLeadCard: {
     borderColor: "#9FD7C8",
@@ -3427,6 +3546,9 @@ const s = StyleSheet.create({
   leadStatusDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: c.blue },
   leadStatusText: { fontSize: 10, fontWeight: "700", color: c.ink },
   leadExplanation: { marginTop: 9, fontSize: 12, lineHeight: 17, color: c.ink },
+  leadIntelligenceRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 9 },
+  leadIntelligencePill: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 7, paddingVertical: 5, borderRadius: 9, backgroundColor: c.bg },
+  leadIntelligenceText: { fontSize: 9, fontWeight: "700", color: c.muted },
   leadContacts: { gap: 5, marginTop: 9 },
   leadContactLine: { flexDirection: "row", alignItems: "center", gap: 7 },
   leadContactText: { flex: 1, minWidth: 0, fontSize: 11, color: c.muted },
@@ -3453,15 +3575,34 @@ const s = StyleSheet.create({
   leadMessageTitle: { flex: 1, minWidth: 0, fontSize: 10, fontWeight: "700", color: c.muted },
   leadShareButton: { width: 28, height: 28, borderRadius: 9, alignItems: "center", justifyContent: "center", backgroundColor: c.white },
   leadMessageText: { marginTop: 5, fontSize: 11, lineHeight: 16, color: c.ink },
+  leadDetailBox: { marginTop: 11, paddingHorizontal: 10, paddingVertical: 8, borderRadius: 12, backgroundColor: "#EDF8F3" },
+  leadRiskBox: { backgroundColor: "#FFF7EB" },
+  leadDetailLine: { marginTop: 3, fontSize: 11, lineHeight: 16, color: c.green },
+  leadRiskLine: { marginTop: 3, fontSize: 11, lineHeight: 16, color: c.orange },
   leadSources: { marginTop: 11 },
   leadSmallTitle: { marginTop: 10, marginBottom: 5, fontSize: 10, fontWeight: "700", color: c.muted },
   leadSourceLine: { minHeight: 29, flexDirection: "row", alignItems: "center", gap: 6 },
   leadSourceText: { flex: 1, minWidth: 0, fontSize: 11, fontWeight: "600", color: c.blue },
+  leadHistory: { marginTop: 8 },
+  leadHistoryLine: { flexDirection: "row", alignItems: "flex-start", gap: 7, paddingVertical: 5 },
+  leadHistoryDot: { width: 7, height: 7, marginTop: 4, borderRadius: 4, backgroundColor: c.blue },
+  leadHistoryTitle: { fontSize: 10, fontWeight: "700", color: c.ink },
+  leadHistoryNote: { marginTop: 2, fontSize: 10, lineHeight: 14, color: c.muted },
+  leadNoteForm: { gap: 8, marginTop: 10 },
+  leadNoteInput: { minHeight: 76, textAlignVertical: "top" },
+  leadNoteActions: { flexDirection: "row", gap: 8 },
+  leadNoteCancel: { flex: 1, minHeight: 38, alignItems: "center", justifyContent: "center", borderRadius: 11, backgroundColor: c.bg },
+  leadNoteCancelText: { fontSize: 11, fontWeight: "700", color: c.muted },
+  leadNoteSave: { flex: 1, minHeight: 38, alignItems: "center", justifyContent: "center", borderRadius: 11, backgroundColor: c.blue },
+  leadNoteSaveText: { fontSize: 11, fontWeight: "700", color: c.white },
+  leadAddNote: { minHeight: 38, marginTop: 10, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, borderRadius: 11, backgroundColor: c.softBlue },
   leadStatusOptions: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
   leadStatusOption: { paddingHorizontal: 9, paddingVertical: 6, borderRadius: 10, backgroundColor: c.bg },
   leadStatusOptionOn: { backgroundColor: c.blue },
   leadStatusOptionText: { fontSize: 10, fontWeight: "700", color: c.muted },
   leadStatusOptionTextOn: { color: c.white },
+  leadPromoteButton: { minHeight: 40, marginTop: 9, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, borderRadius: 11, backgroundColor: c.green },
+  leadPromoteText: { fontSize: 11, fontWeight: "700", color: c.white },
   searchProgress: {
     width: "100%",
     padding: 16,
