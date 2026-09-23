@@ -134,8 +134,8 @@ export const Btn = ({
     </Text>
   </Pressable>
 );
-const Card = ({ children }: { children: React.ReactNode }) => (
-  <View style={s.card}>{children}</View>
+const Card = ({ children, style }: { children: React.ReactNode; style?: any }) => (
+  <View style={[s.card, style]}>{children}</View>
 );
 const Title = ({ title, sub }: { title: string; sub?: string }) => (
   <View style={{ marginBottom: 20 }}>
@@ -3014,10 +3014,12 @@ export function Reports() {
   );
 }
 type LeadOverview = {
+  latestCompletedRunId?: string | null;
   config: { productNames: string[]; countries: string[]; minimumOrderKg?: number; buyerTypes: string[]; outreachLanguages: string[]; intermediaryMode: string };
   readiness: { parametersReady: boolean; providerReady: boolean; missing: string[] };
   candidates: Array<{
     id: string;
+    runId: string;
     companyName: string;
     website: string;
     country?: string;
@@ -3181,10 +3183,20 @@ export function LeadAgent() {
       <Text style={s.section}>Кандидаты · {overview?.candidates.length ?? 0}</Text>
       {!overview?.candidates.length ? (
         <Empty text="После настройки здесь появятся компании, рейтинг, контакты и ссылки на источники." />
-      ) : overview.candidates.map((lead) => (
-        <Card key={lead.id}>
+      ) : overview.candidates.map((lead) => {
+        const isNew = lead.runId === overview.latestCompletedRunId;
+        return (
+        <Card key={lead.id} style={isNew ? s.newLeadCard : undefined}>
           <View style={s.row}>
-            <Text style={[s.section, { flex: 1 }]}>{lead.companyName}</Text>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              {isNew && (
+                <View style={s.newLeadLabel}>
+                  <Ionicons name="sparkles" size={13} color={c.green} />
+                  <Text style={s.newLeadLabelText}>Новый результат</Text>
+                </View>
+              )}
+              <Text style={s.section}>{lead.companyName}</Text>
+            </View>
             <Text style={s.badge}>{lead.score}/100</Text>
           </View>
           <Text style={s.muted}>{[lead.industry, lead.city, lead.country].filter(Boolean).join(" · ")}</Text>
@@ -3223,12 +3235,30 @@ export function LeadAgent() {
             ))}
           </View>
         </Card>
-      ))}
+        );
+      })}
     </View>
   );
 }
 
 const s = StyleSheet.create({
+  newLeadCard: {
+    borderColor: "#9FD7C8",
+    borderWidth: 1.5,
+    backgroundColor: "#F2FBF7",
+  },
+  newLeadLabel: {
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: 20,
+    backgroundColor: "#DCF3EA",
+    marginBottom: 3,
+  },
+  newLeadLabelText: { fontSize: 11, fontWeight: "700", color: c.green },
   searchProgress: {
     width: "100%",
     padding: 16,

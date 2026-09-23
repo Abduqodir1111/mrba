@@ -207,7 +207,7 @@ export class LeadAgentController {
     if (!config) config = await this.db.leadAgentConfig.create({ data: { id: "default", productNames: [...defaultLeadConfig.productNames], countries: [...defaultLeadConfig.countries], minimumOrderKg: defaultLeadConfig.minimumOrderKg, buyerTypes: [...defaultLeadConfig.buyerTypes], outreachLanguages: [...defaultLeadConfig.outreachLanguages], intermediaryMode: defaultLeadConfig.intermediaryMode } });
     const [candidates, runs, products] = await Promise.all([
       this.db.leadCandidate.findMany({
-        orderBy: [{ score: "desc" }, { createdAt: "desc" }],
+        orderBy: [{ createdAt: "desc" }, { score: "desc" }],
         take: 100,
         include: { evidence: true, statusEvents: { orderBy: { createdAt: "desc" }, take: 1 } },
       }),
@@ -227,6 +227,7 @@ export class LeadAgentController {
       products,
       candidates,
       runs,
+      latestCompletedRunId: runs.find((run) => run.status === "COMPLETED")?.id ?? null,
       readiness: {
         parametersReady: missing.length === 0,
         providerReady: Boolean(process.env.OPENAI_API_KEY),
