@@ -3135,6 +3135,7 @@ export function LeadAgent() {
         )}
         <Btn title="Начать поиск" onPress={start} disabled={!overview?.readiness.parametersReady || !overview?.readiness.providerReady} />
         <Text style={[s.muted, { marginTop: 10 }]}>Сообщения кандидатам не отправляются автоматически. Сначала владелец проверяет компанию.</Text>
+        <Text style={[s.muted, { marginTop: 4 }]}>Каждый запуск ищет только новые компании. Уже найденные кандидаты исключаются.</Text>
         {activeRun?.status === "RUNNING" && (
           <View style={s.searchProgress}>
             <View style={s.row}>

@@ -161,7 +161,11 @@ const leadSchema = {
   },
 };
 
-async function discoverLeads(config: any, limit: number): Promise<DiscoveredLead[]> {
+async function discoverLeads(
+  config: any,
+  limit: number,
+  excludedCompanies: Array<{ companyName: string; normalizedWebsite: string }>,
+): Promise<DiscoveredLead[]> {
   const responseSchema = structuredClone(leadSchema);
   responseSchema.properties.candidates.maxItems = limit;
   const response = await fetch("https://api.openai.com/v1/responses", {
@@ -172,7 +176,7 @@ async function discoverLeads(config: any, limit: number): Promise<DiscoveredLead
       tools: [{ type: "web_search", search_context_size: "medium" }],
       tool_choice: "auto",
       text: { format: { type: "json_schema", name: "mrba_lead_candidates", strict: true, schema: responseSchema } },
-      input: `Найди до ${limit} реальных потенциальных покупателей продукции MRBA.\nПродукция: ${config.productNames.join(", ")}.\nСтраны: ${config.countries.join(", ")}.\nМинимальная партия: ${config.minimumOrderKg} кг.\nТипы покупателей: ${config.buyerTypes.join(", ")}.\nИскать только конечных промышленных потребителей и производителей; посредников, трейдеров, магазины и каталоги как кандидатов исключить. Каталоги можно использовать только как источник для обнаружения официального сайта. Сохраняй компанию только если на официальном сайте или подтверждённой странице найден хотя бы один прямой контакт: email, Telegram или WhatsApp. Не придумывай контакты. Если найден телефон, обязательно проверь страницы контактов и социальные ссылки компании: contactWhatsapp заполняй только полной явной ссылкой wa.me или whatsapp.com, опубликованной компанией; contactTelegram — только явной ссылкой t.me или telegram.me. Не считай обычный номер подтверждённым WhatsApp и не пытайся угадывать Telegram по номеру. Если канал не подтверждён, верни пустую строку. Добавь в evidence страницу, где опубликована каждая подтверждённая ссылка. Телефон без WhatsApp можно сохранить дополнительно. Для каждой компании укажи конкретные URL-доказательства, почему ей нужны медные или латунные прутки и где найден контакт. Определи язык сайта и составь короткий персональный текст первого обращения на этом языке. Не отправляй сообщения.`,
+      input: `Найди до ${limit} НОВЫХ реальных потенциальных покупателей продукции MRBA.\nПродукция: ${config.productNames.join(", ")}.\nСтраны: ${config.countries.join(", ")}.\nМинимальная партия: ${config.minimumOrderKg} кг.\nТипы покупателей: ${config.buyerTypes.join(", ")}.\nУЖЕ НАЙДЕННЫЕ КОМПАНИИ, КОТОРЫЕ НЕЛЬЗЯ ВОЗВРАЩАТЬ ПОВТОРНО:\n${excludedCompanies.length ? excludedCompanies.map((item) => `- ${item.companyName} (${item.normalizedWebsite})`).join("\n") : "Список пуст"}\nНе возвращай эти компании, их филиалы, альтернативные домены или переименованные варианты. Искать только конечных промышленных потребителей и производителей; посредников, трейдеров, магазины и каталоги как кандидатов исключить. Каталоги можно использовать только как источник для обнаружения официального сайта. Сохраняй компанию только если на официальном сайте или подтверждённой странице найден хотя бы один прямой контакт: email, Telegram или WhatsApp. Не придумывай контакты. Если найден телефон, обязательно проверь страницы контактов и социальные ссылки компании: contactWhatsapp заполняй только полной явной ссылкой wa.me или whatsapp.com, опубликованной компанией; contactTelegram — только явной ссылкой t.me или telegram.me. Не считай обычный номер подтверждённым WhatsApp и не пытайся угадывать Telegram по номеру. Если канал не подтверждён, верни пустую строку. Добавь в evidence страницу, где опубликована каждая подтверждённая ссылка. Телефон без WhatsApp можно сохранить дополнительно. Для каждой компании укажи конкретные URL-доказательства, почему ей нужны медные или латунные прутки и где найден контакт. Определи язык сайта и составь короткий персональный текст первого обращения на этом языке. Не отправляй сообщения.`,
     }),
     signal: AbortSignal.timeout(180000),
   });
@@ -272,6 +276,8 @@ export class LeadAgentController {
       throw new BadRequestException("Сначала заполните параметры поиска клиентов");
     if (!process.env.OPENAI_API_KEY)
       throw new BadRequestException("OpenAI API ещё не подключён");
+    const activeRun = await this.db.leadSearchRun.findFirst({ where: { status: "RUNNING" } });
+    if (activeRun) throw new BadRequestException("Предыдущий поиск ещё выполняется");
     const runResult = await this.ops.command(req.actor.id, id, epoch, "LEAD_SEARCH_RUN", { configId: config.id, updatedAt: config.updatedAt.toISOString(), limit: dto.limit }, async (tx) => {
       const run = await tx.leadSearchRun.create({ data: { createdBy: req.actor.id, status: "RUNNING", progressStage: "SEARCHING", targetCount: dto.limit, startedAt: new Date(), criteria: { ...(config as any), limit: dto.limit } } });
       return { id: run.id };
@@ -282,17 +288,36 @@ export class LeadAgentController {
 
   private async executeRun(runId: string, config: any, limit: number) {
     try {
-      const leads = await discoverLeads(config, limit);
+      const existing = await this.db.leadCandidate.findMany({
+        select: { companyName: true, normalizedWebsite: true },
+        orderBy: { createdAt: "desc" },
+        take: 300,
+      });
+      const excludedDomains = new Set(existing.map((item) => item.normalizedWebsite));
+      const excludedNames = new Set(existing.map((item) => item.companyName.trim().toLocaleLowerCase("ru")));
+      const collected = new Map<string, DiscoveredLead>();
+      const exclusions = [...existing];
+      for (let attempt = 0; attempt < 3 && collected.size < limit; attempt++) {
+        const batch = await discoverLeads(config, limit - collected.size, exclusions);
+        for (const lead of batch) {
+          let domain: string;
+          try { domain = normalizeWebsite(lead.website); } catch { continue; }
+          const normalizedName = lead.companyName.trim().toLocaleLowerCase("ru");
+          if (excludedDomains.has(domain) || excludedNames.has(normalizedName) || collected.has(domain)) continue;
+          collected.set(domain, lead);
+          excludedDomains.add(domain);
+          excludedNames.add(normalizedName);
+          exclusions.push({ companyName: lead.companyName, normalizedWebsite: domain });
+        }
+        await this.db.leadSearchRun.update({ where: { id: runId }, data: { foundCount: collected.size } });
+      }
+      const leads = [...collected.values()];
       await this.db.leadSearchRun.update({ where: { id: runId }, data: { progressStage: "SAVING", foundCount: leads.length } });
       await this.db.$transaction(async (tx) => {
         for (const lead of leads) {
           let normalizedWebsite: string;
           try { normalizedWebsite = normalizeWebsite(lead.website); } catch { continue; }
-          const candidate = await tx.leadCandidate.upsert({
-            where: { normalizedWebsite },
-            create: { runId, companyName: lead.companyName, normalizedWebsite, website: lead.website, country: lead.country || null, city: lead.city || null, industry: lead.industry || null, score: lead.score, scoreExplanation: lead.scoreExplanation, contactEmail: lead.contactEmail || null, contactPhone: lead.contactPhone || null, contactTelegram: lead.contactTelegram || null, contactWhatsapp: lead.contactWhatsapp || null, outreachLanguage: lead.outreachLanguage || null, outreachText: lead.outreachText || null, lastVerifiedAt: new Date() },
-            update: { runId, companyName: lead.companyName, website: lead.website, country: lead.country || null, city: lead.city || null, industry: lead.industry || null, score: lead.score, scoreExplanation: lead.scoreExplanation, contactEmail: lead.contactEmail || null, contactPhone: lead.contactPhone || null, contactTelegram: lead.contactTelegram || null, contactWhatsapp: lead.contactWhatsapp || null, outreachLanguage: lead.outreachLanguage || null, outreachText: lead.outreachText || null, lastVerifiedAt: new Date() },
-          });
+          const candidate = await tx.leadCandidate.create({ data: { runId, companyName: lead.companyName, normalizedWebsite, website: lead.website, country: lead.country || null, city: lead.city || null, industry: lead.industry || null, score: lead.score, scoreExplanation: lead.scoreExplanation, contactEmail: lead.contactEmail || null, contactPhone: lead.contactPhone || null, contactTelegram: lead.contactTelegram || null, contactWhatsapp: lead.contactWhatsapp || null, outreachLanguage: lead.outreachLanguage || null, outreachText: lead.outreachText || null, lastVerifiedAt: new Date() } });
           await tx.leadEvidence.deleteMany({ where: { candidateId: candidate.id } });
           const uniqueEvidence = [...new Map(
             lead.evidence
