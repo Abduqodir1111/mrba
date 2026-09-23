@@ -3227,51 +3227,83 @@ export function LeadAgent() {
       ) : overview.candidates.map((lead) => {
         const isNew = lead.runId === overview.latestCompletedRunId;
         return (
-        <Card key={lead.id} style={isNew ? s.newLeadCard : undefined}>
-          <View style={s.row}>
-            <View style={{ flex: 1, minWidth: 0 }}>
-              {isNew && (
-                <View style={s.newLeadLabel}>
-                  <Ionicons name="sparkles" size={13} color={c.green} />
-                  <Text style={s.newLeadLabelText}>Новый результат</Text>
+        <Card key={lead.id} style={[s.leadCard, isNew && s.newLeadCard]}>
+          <View style={s.leadCardHeader}>
+            <View style={s.leadCompanyIcon}>
+              <Ionicons name="business" size={18} color={isNew ? c.green : c.blue} />
+            </View>
+            <View style={s.leadCompanyInfo}>
+              <Text style={s.leadCompanyName} numberOfLines={2}>{lead.companyName}</Text>
+              <Text style={s.leadLocation} numberOfLines={1}>{[lead.industry, lead.city, lead.country].filter(Boolean).join(" · ")}</Text>
+            </View>
+            <View style={s.leadScore}>
+              <Text style={s.leadScoreValue}>{lead.score}</Text>
+              <Text style={s.leadScoreCaption}>из 100</Text>
+            </View>
+          </View>
+          <View style={s.leadBadgeRow}>
+            {isNew && (
+              <View style={s.newLeadLabel}>
+                <Ionicons name="sparkles" size={12} color={c.green} />
+                <Text style={s.newLeadLabelText}>Новый</Text>
+              </View>
+            )}
+            <View style={s.leadStatusPill}>
+              <View style={s.leadStatusDot} />
+              <Text style={s.leadStatusText}>{leadStatus[lead.status] ?? lead.status}</Text>
+            </View>
+          </View>
+          <Text style={s.leadExplanation} numberOfLines={3}>{lead.scoreExplanation}</Text>
+          {(lead.contactEmail || lead.contactPhone) && (
+            <View style={s.leadContacts}>
+              {!!lead.contactEmail && (
+                <View style={s.leadContactLine}>
+                  <Ionicons name="mail-outline" size={15} color={c.muted} />
+                  <Text style={s.leadContactText} numberOfLines={1}>{lead.contactEmail}</Text>
                 </View>
               )}
-              <Text style={s.section}>{lead.companyName}</Text>
+              {!!lead.contactPhone && (
+                <View style={s.leadContactLine}>
+                  <Ionicons name="call-outline" size={15} color={c.muted} />
+                  <Text style={s.leadContactText} numberOfLines={1}>{lead.contactPhone}</Text>
+                </View>
+              )}
             </View>
-            <Text style={s.badge}>{lead.score}/100</Text>
+          )}
+          <View style={s.leadActions}>
+            {!!lead.contactPhone && <Pressable style={s.leadAction} onPress={() => void Linking.openURL(`tel:${lead.contactPhone!.replace(/[^+\d]/g, "")}`)}><Ionicons name="call-outline" size={17} color={c.blue} /><Text style={s.leadActionText}>Позвонить</Text></Pressable>}
+            {!!lead.contactTelegram && <Pressable style={s.leadAction} onPress={() => void Linking.openURL(telegramUrl(lead.contactTelegram!))}><Ionicons name="paper-plane-outline" size={17} color={c.blue} /><Text style={s.leadActionText}>Telegram</Text></Pressable>}
+            {!!lead.contactWhatsapp && <Pressable style={s.leadAction} onPress={() => void Linking.openURL(whatsappUrl(lead.contactWhatsapp!))}><Ionicons name="logo-whatsapp" size={17} color={c.green} /><Text style={s.leadActionText}>WhatsApp</Text></Pressable>}
+            {!!lead.contactEmail && <Pressable style={s.leadAction} onPress={() => void Linking.openURL(`mailto:${lead.contactEmail}?subject=${encodeURIComponent("Предложение от MRBA")}&body=${encodeURIComponent(lead.outreachText || "")}`)}><Ionicons name="mail-outline" size={17} color={c.blue} /><Text style={s.leadActionText}>Почта</Text></Pressable>}
+            <Pressable style={s.leadAction} onPress={() => void Linking.openURL(lead.website)}><Ionicons name="globe-outline" size={17} color={c.blue} /><Text style={s.leadActionText}>Сайт</Text></Pressable>
           </View>
-          <Text style={s.muted}>{[lead.industry, lead.city, lead.country].filter(Boolean).join(" · ")}</Text>
-          <Text style={[s.text, { marginTop: 10 }]}>{lead.scoreExplanation}</Text>
-          <Row label="Статус" value={leadStatus[lead.status] ?? lead.status} />
-          {!!lead.contactEmail && <Row label="E-mail" value={lead.contactEmail} />}
-          {!!lead.contactPhone && <Row label="Телефон" value={lead.contactPhone} />}
-          {!!lead.contactPhone && <Btn title="Позвонить" secondary onPress={() => void Linking.openURL(`tel:${lead.contactPhone!.replace(/[^+\d]/g, "")}`)} />}
-          {!!lead.contactTelegram && <Btn title="Открыть Telegram" secondary onPress={() => void Linking.openURL(telegramUrl(lead.contactTelegram!))} />}
-          {!!lead.contactWhatsapp && <Btn title="Открыть WhatsApp" secondary onPress={() => void Linking.openURL(whatsappUrl(lead.contactWhatsapp!))} />}
-          {!!lead.contactEmail && <Btn title="Написать по почте" secondary onPress={() => void Linking.openURL(`mailto:${lead.contactEmail}?subject=${encodeURIComponent("Предложение от MRBA")}&body=${encodeURIComponent(lead.outreachText || "")}`)} />}
-          <Btn title="Открыть сайт" secondary onPress={() => void Linking.openURL(lead.website)} />
           {!!lead.outreachText && (
-            <View style={{ marginTop: 12 }}>
-              <Text style={s.label}>Текст обращения · {lead.outreachLanguage || "язык сайта"}</Text>
-              <Text style={s.text}>{lead.outreachText}</Text>
-              <Btn title="Поделиться текстом" secondary onPress={() => void Share.share({ message: lead.outreachText! })} />
+            <View style={s.leadMessageBox}>
+              <View style={s.leadMessageHeader}>
+                <Text style={s.leadMessageTitle}>Текст обращения · {lead.outreachLanguage || "язык сайта"}</Text>
+                <Pressable style={s.leadShareButton} onPress={() => void Share.share({ message: lead.outreachText! })}>
+                  <Ionicons name="share-outline" size={16} color={c.blue} />
+                </Pressable>
+              </View>
+              <Text style={s.leadMessageText} numberOfLines={4}>{lead.outreachText}</Text>
             </View>
           )}
           {!!lead.evidence.length && (
-            <View style={{ marginTop: 12 }}>
-              <Text style={s.label}>Источники</Text>
+            <View style={s.leadSources}>
+              <Text style={s.leadSmallTitle}>Источники · {lead.evidence.length}</Text>
               {lead.evidence.map((source, index) => (
-                <Pressable key={source.id} onPress={() => void Linking.openURL(source.url)} style={{ paddingVertical: 7 }}>
-                  <Text style={{ color: c.blue, fontWeight: "600" }}>{index + 1}. {source.title || source.url}</Text>
-                  {!!source.excerpt && <Text style={s.muted}>{source.excerpt}</Text>}
+                <Pressable key={source.id} onPress={() => void Linking.openURL(source.url)} style={s.leadSourceLine}>
+                  <Ionicons name="link-outline" size={14} color={c.blue} />
+                  <Text style={s.leadSourceText} numberOfLines={1}>{index + 1}. {source.title || source.url}</Text>
                 </Pressable>
               ))}
             </View>
           )}
-          <View style={s.chips}>
+          <Text style={s.leadSmallTitle}>Изменить статус</Text>
+          <View style={s.leadStatusOptions}>
             {(["VERIFIED", "CONTACTED", "NEGOTIATION", "REJECTED"] as const).map((next) => (
-              <Pressable key={next} style={[s.chip, lead.status === next && s.chipOn]} onPress={() => void changeStatus(lead.id, next)}>
-                <Text style={s.text}>{leadStatus[next]}</Text>
+              <Pressable key={next} style={[s.leadStatusOption, lead.status === next && s.leadStatusOptionOn]} onPress={() => void changeStatus(lead.id, next)}>
+                <Text style={[s.leadStatusOptionText, lead.status === next && s.leadStatusOptionTextOn]}>{leadStatus[next]}</Text>
               </Pressable>
             ))}
           </View>
@@ -3338,23 +3370,82 @@ const s = StyleSheet.create({
   },
   leadSafetyNote: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, marginTop: 10 },
   leadSafetyText: { flexShrink: 1, textAlign: "center", fontSize: 11, lineHeight: 16, color: c.muted },
+  leadCard: { padding: 14, borderRadius: 18 },
   newLeadCard: {
     borderColor: "#9FD7C8",
     borderWidth: 1.5,
     backgroundColor: "#F2FBF7",
   },
+  leadCardHeader: { flexDirection: "row", alignItems: "center", gap: 10 },
+  leadCompanyIcon: {
+    width: 36,
+    height: 36,
+    flexShrink: 0,
+    borderRadius: 11,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: c.softBlue,
+  },
+  leadCompanyInfo: { flex: 1, minWidth: 0 },
+  leadCompanyName: { fontSize: 16, lineHeight: 20, fontWeight: "700", color: c.ink },
+  leadLocation: { marginTop: 2, fontSize: 11, lineHeight: 15, color: c.muted },
+  leadScore: {
+    minWidth: 48,
+    flexShrink: 0,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: 12,
+    alignItems: "center",
+    backgroundColor: c.softBlue,
+  },
+  leadScoreValue: { fontSize: 16, lineHeight: 18, fontWeight: "800", color: c.blue },
+  leadScoreCaption: { fontSize: 8, lineHeight: 10, fontWeight: "600", color: c.muted },
+  leadBadgeRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 6, marginTop: 9 },
   newLeadLabel: {
-    alignSelf: "flex-start",
     flexDirection: "row",
     alignItems: "center",
-    gap: 5,
-    paddingHorizontal: 9,
-    paddingVertical: 5,
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
     borderRadius: 20,
     backgroundColor: "#DCF3EA",
-    marginBottom: 3,
   },
-  newLeadLabelText: { fontSize: 11, fontWeight: "700", color: c.green },
+  newLeadLabelText: { fontSize: 10, fontWeight: "700", color: c.green },
+  leadStatusPill: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 20, backgroundColor: c.bg },
+  leadStatusDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: c.blue },
+  leadStatusText: { fontSize: 10, fontWeight: "700", color: c.ink },
+  leadExplanation: { marginTop: 9, fontSize: 12, lineHeight: 17, color: c.ink },
+  leadContacts: { gap: 5, marginTop: 9 },
+  leadContactLine: { flexDirection: "row", alignItems: "center", gap: 7 },
+  leadContactText: { flex: 1, minWidth: 0, fontSize: 11, color: c.muted },
+  leadActions: { flexDirection: "row", flexWrap: "wrap", gap: 7, marginTop: 11 },
+  leadAction: {
+    minHeight: 35,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 5,
+    paddingHorizontal: 10,
+    borderRadius: 11,
+    borderWidth: 1,
+    borderColor: c.line,
+    backgroundColor: c.white,
+  },
+  leadActionText: { fontSize: 11, fontWeight: "700", color: c.ink },
+  leadMessageBox: { marginTop: 11, padding: 10, borderRadius: 12, backgroundColor: c.bg },
+  leadMessageHeader: { flexDirection: "row", alignItems: "center", gap: 8 },
+  leadMessageTitle: { flex: 1, minWidth: 0, fontSize: 10, fontWeight: "700", color: c.muted },
+  leadShareButton: { width: 28, height: 28, borderRadius: 9, alignItems: "center", justifyContent: "center", backgroundColor: c.white },
+  leadMessageText: { marginTop: 5, fontSize: 11, lineHeight: 16, color: c.ink },
+  leadSources: { marginTop: 11 },
+  leadSmallTitle: { marginTop: 10, marginBottom: 5, fontSize: 10, fontWeight: "700", color: c.muted },
+  leadSourceLine: { minHeight: 29, flexDirection: "row", alignItems: "center", gap: 6 },
+  leadSourceText: { flex: 1, minWidth: 0, fontSize: 11, fontWeight: "600", color: c.blue },
+  leadStatusOptions: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
+  leadStatusOption: { paddingHorizontal: 9, paddingVertical: 6, borderRadius: 10, backgroundColor: c.bg },
+  leadStatusOptionOn: { backgroundColor: c.blue },
+  leadStatusOptionText: { fontSize: 10, fontWeight: "700", color: c.muted },
+  leadStatusOptionTextOn: { color: c.white },
   searchProgress: {
     width: "100%",
     padding: 16,
