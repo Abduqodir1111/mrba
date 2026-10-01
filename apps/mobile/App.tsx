@@ -36,6 +36,7 @@ import {
   resolvePending,
 } from "./src/api";
 import { theme as c } from "./src/theme";
+import { confirmAction } from "./src/confirm-action";
 
 Decimal.set({ precision: 60 });
 function openPublicPage(url: string) {
@@ -677,12 +678,13 @@ function FactoryApp() {
                 <Button
                   title="Выйти из аккаунта"
                   secondary
-                  onPress={() =>
-                    Alert.alert("Выйти?", "Данные сохранены на сервере.", [
-                      { text: "Отмена" },
-                      { text: "Выйти", style: "destructive", onPress: signOut },
-                    ])
-                  }
+                  onPress={() => confirmAction({
+                    title: "Выйти?",
+                    message: "Данные сохранены на сервере.",
+                    confirmText: "Выйти",
+                    destructive: true,
+                    onConfirm: signOut,
+                  })}
                 />
               </>
             )}
@@ -841,14 +843,12 @@ function EntryModal({
         : "Новый поставщик";
   function confirm() {
     if (kind !== "purchase") return void save();
-    Alert.alert(
-      "Подтвердить поступление?",
-      `${material === "new" ? name.trim() : materials.find((m) => m.id === material)?.name}\n${quantity} ${unit === "t" ? "т" : "кг"}\nЦена: ${price} ${currency}/кг\nСырьё будет добавлено на склад.`,
-      [
-        { text: "Отмена" },
-        { text: "Принять сырьё", onPress: () => void save() },
-      ],
-    );
+    confirmAction({
+      title: "Подтвердить поступление?",
+      message: `${material === "new" ? name.trim() : materials.find((m) => m.id === material)?.name}\n${quantity} ${unit === "t" ? "т" : "кг"}\nЦена: ${price} ${currency}/кг\nСырьё будет добавлено на склад.`,
+      confirmText: "Принять сырьё",
+      onConfirm: () => save(),
+    });
   }
   return (
     <Modal

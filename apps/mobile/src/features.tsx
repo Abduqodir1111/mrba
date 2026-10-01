@@ -29,6 +29,7 @@ import {
   cancelDraft,
 } from "./api";
 import { theme as c } from "./theme";
+import { confirmAction } from "./confirm-action";
 const fmt = (value: any) => {
   const n = new Decimal(value ?? 0);
   const [whole, fraction] = n
@@ -946,23 +947,19 @@ export function Workspace({
       submit: (v, send) => send(path, build(v)),
     });
   const simple = (title: string, path: string, body: any) =>
-    Alert.alert(title, "Подтвердите действие.", [
-      { text: "Отмена", style: "cancel" },
-      {
-        text: "Подтвердить",
-        onPress: () => {
-          void (async () => {
-            try {
-              await mutate(path, body);
-              await load();
-              onChanged();
-            } catch (e) {
-              Alert.alert("Не удалось выполнить", (e as Error).message);
-            }
-          })();
-        },
+    confirmAction({
+      title,
+      message: "Подтвердите действие.",
+      onConfirm: async () => {
+        try {
+          await mutate(path, body);
+          await load();
+          onChanged();
+        } catch (e) {
+          Alert.alert("Не удалось выполнить", (e as Error).message);
+        }
       },
-    ]);
+    });
   const saleProducts = new Map<string, { name: string; quantity: Decimal }>();
   for (const row of rows("stock")) {
     if (
@@ -2181,27 +2178,22 @@ export function Workspace({
               <Btn
                 title="Уточнить и завершить"
                 onPress={() =>
-                  Alert.alert(
-                    "Завершить сохранённую операцию?",
-                    "Сервер повторно проверит остатки и условия.",
-                    [
-                      { text: "Назад" },
-                      {
-                        text: "Продолжить",
-                        onPress: () => {
-                          void resumeDraft(d.id)
-                            .then(() => {
-                              void load();
-                              onChanged();
-                            })
-                            .catch((e) => {
-                              Alert.alert("Операция не завершена", e.message);
-                              onChanged();
-                            });
-                        },
-                      },
-                    ],
-                  )
+                  confirmAction({
+                    title: "Завершить сохранённую операцию?",
+                    message: "Сервер повторно проверит остатки и условия.",
+                    confirmText: "Продолжить",
+                    cancelText: "Назад",
+                    onConfirm: async () => {
+                      try {
+                        await resumeDraft(d.id);
+                        await load();
+                        onChanged();
+                      } catch (e) {
+                        Alert.alert("Операция не завершена", (e as Error).message);
+                        onChanged();
+                      }
+                    },
+                  })
                 }
               />
               {d.status === "DRAFT" && (
