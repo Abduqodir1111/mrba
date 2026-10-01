@@ -4,6 +4,8 @@ import {
   Controller,
   Get,
   Headers,
+  Logger,
+  OnModuleInit,
   Param,
   ParseUUIDPipe,
   Post,
@@ -27,6 +29,8 @@ import {
 import { AccessGuard, Allow, AuthRequest } from "./identity";
 import { Database } from "./db";
 import { OperationsService } from "./operations";
+import { normalizeWebsiteDomain } from "./lead-verification";
+import { CodeDiscoveredLead, discoverLeadSites } from "./lead-discovery";
 
 const defaultLeadConfig = {
   productNames: ["Латунные прутки", "Медные прутки"],
@@ -51,6 +55,8 @@ const leadStatuses = [
   "CUSTOMER",
   "REJECTED",
 ] as const;
+
+const MIN_LEAD_SCORE = 70;
 
 class LeadAgentConfigDto {
   @IsArray() @ArrayMaxSize(50) @IsUUID("4", { each: true }) productIds!: string[];
@@ -103,34 +109,18 @@ type DiscoveredLead = {
   evidence: Array<{ url: string; title: string; excerpt: string }>;
 };
 
-const normalizeWebsite = (value: string) => {
-  const url = new URL(value);
-  return url.hostname.toLowerCase().replace(/^www\./, "");
-};
+type QualifiedLead = Omit<DiscoveredLead,
+  "companyName" | "contactEmail" | "contactPhone" | "contactTelegram" | "contactWhatsapp" | "evidence"
+>;
 
-const verifiedTelegramUrl = (value: string) => {
-  if (!value) return null;
-  try {
-    const url = new URL(value.startsWith("http") ? value : `https://t.me/${value.replace(/^@/, "")}`);
-    if (!["t.me", "telegram.me", "www.t.me", "www.telegram.me"].includes(url.hostname.toLowerCase())) return null;
-    const username = url.pathname.split("/").filter(Boolean)[0];
-    return username && !["share", "joinchat"].includes(username.toLowerCase()) ? `https://t.me/${username}` : null;
-  } catch { return null; }
-};
-
-const phoneDigits = (value: string) => value.replace(/\D/g, "");
-
-const verifiedWhatsappUrl = (value: string, contactPhone: string) => {
-  if (!value) return null;
-  try {
-    const url = new URL(value);
-    const host = url.hostname.toLowerCase();
-    if (!["wa.me", "www.wa.me", "api.whatsapp.com", "www.whatsapp.com"].includes(host)) return null;
-    const number = host.includes("whatsapp.com") ? url.searchParams.get("phone")?.replace(/\D/g, "") : url.pathname.replace(/\D/g, "");
-    const listedNumber = phoneDigits(contactPhone || "");
-    if (number && listedNumber && number !== listedNumber) return null;
-    return number ? `https://wa.me/${number}` : null;
-  } catch { return null; }
+export const parseLeadResponsePayload = (payload: any): DiscoveredLead[] => {
+  const outputText = payload?.output_text ?? payload?.output
+    ?.flatMap((item: any) => item.content ?? [])
+    .find((item: any) => item.type === "output_text")?.text;
+  if (!outputText) throw new Error("OpenAI не вернул результат поиска");
+  const parsed = JSON.parse(outputText) as { candidates?: DiscoveredLead[] };
+  if (!Array.isArray(parsed.candidates)) throw new Error("OpenAI вернул некорректный список кандидатов");
+  return parsed.candidates;
 };
 
 const leadSchema = {
@@ -140,13 +130,12 @@ const leadSchema = {
   properties: {
     candidates: {
       type: "array",
-      maxItems: 15,
+      maxItems: 8,
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["companyName", "website", "country", "city", "industry", "companySize", "estimatedOrderKg", "fitReasons", "riskFlags", "score", "scoreExplanation", "contactName", "contactRole", "contactEmail", "contactPhone", "contactTelegram", "contactWhatsapp", "outreachLanguage", "outreachText", "evidence"],
+        required: ["website", "country", "city", "industry", "companySize", "estimatedOrderKg", "fitReasons", "riskFlags", "score", "scoreExplanation", "contactName", "contactRole", "outreachLanguage", "outreachText"],
         properties: {
-          companyName: { type: "string" },
           website: { type: "string" },
           country: { type: "string" },
           city: { type: "string" },
@@ -159,75 +148,72 @@ const leadSchema = {
           scoreExplanation: { type: "string" },
           contactName: { type: "string" },
           contactRole: { type: "string" },
-          contactEmail: { type: "string" },
-          contactPhone: { type: "string" },
-          contactTelegram: { type: "string" },
-          contactWhatsapp: { type: "string" },
           outreachLanguage: { type: "string" },
           outreachText: { type: "string" },
-          evidence: {
-            type: "array",
-            minItems: 1,
-            maxItems: 5,
-            items: {
-              type: "object",
-              additionalProperties: false,
-              required: ["url", "title", "excerpt"],
-              properties: {
-                url: { type: "string" },
-                title: { type: "string" },
-                excerpt: { type: "string" },
-              },
-            },
-          },
         },
       },
     },
   },
 };
 
-async function discoverLeads(
+async function qualifyLeads(
   config: any,
-  limit: number,
-  excludedCompanies: Array<{ companyName: string; normalizedWebsite: string }>,
+  leads: CodeDiscoveredLead[],
   outcomeLearnings: string,
   signal: AbortSignal,
-): Promise<DiscoveredLead[]> {
+): Promise<QualifiedLead[]> {
   const responseSchema = structuredClone(leadSchema);
-  responseSchema.properties.candidates.maxItems = limit;
+  responseSchema.properties.candidates.maxItems = leads.length;
+  const compactCandidates = leads.map((lead) => ({
+    companyName: lead.companyName,
+    website: lead.website,
+    country: lead.country,
+    contacts: {
+      email: lead.contactEmail,
+      phone: lead.contactPhone,
+      telegram: lead.contactTelegram,
+      whatsapp: lead.contactWhatsapp,
+    },
+    officialSiteText: lead.profileText.slice(0, 3500),
+  }));
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
     body: JSON.stringify({
       model: process.env.OPENAI_MODEL || "gpt-5.4-mini",
-      tools: [{ type: "web_search", search_context_size: "medium" }],
-      tool_choice: "auto",
       text: { format: { type: "json_schema", name: "mrba_lead_candidates", strict: true, schema: responseSchema } },
-      input: `Работай как B2B-аналитик металлургической компании MRBA. Найди до ${limit} НОВЫХ реальных потенциальных покупателей.\nПродукция: ${config.productNames.join(", ")}.\nСтраны: ${config.countries.join(", ")}.\nМинимальная партия: ${config.minimumOrderKg} кг.\nТипы покупателей: ${config.buyerTypes.join(", ")}.\n\nОПЫТ ПРЕДЫДУЩЕЙ РАБОТЫ АГЕНТА:\n${outcomeLearnings || "Пока нет накопленных результатов."}\nИспользуй положительные результаты как признаки приоритета, а отклонённые компании и причины — как признаки исключения.\n\nУЖЕ НАЙДЕННЫЕ КОМПАНИИ, КОТОРЫЕ НЕЛЬЗЯ ВОЗВРАЩАТЬ ПОВТОРНО:\n${excludedCompanies.length ? excludedCompanies.map((item) => `- ${item.companyName} (${item.normalizedWebsite})`).join("\n") : "Список пуст"}\n\nДля каждой компании выполни этапы: 1) найди официальный сайт; 2) докажи, что предприятие производит товары, где реально применяются медные или латунные прутки; 3) оцени размер предприятия и вероятный объём заказа; 4) найди сотрудника или отдел закупок, снабжения, коммерческого директора, директора производства либо владельца; 5) проверь актуальность сайта и контактной страницы; 6) найди прямые контакты; 7) выставь итоговый балл; 8) составь персональное обращение на языке сайта.\n\nОценка 0–100: соответствие продукции — 35 баллов, размер и потенциальный объём — 20, прямой ответственный контакт — 20, подтверждённые свежие источники — 15, соответствие стране и минимальной партии — 10. В fitReasons перечисли конкретные доказанные причины соответствия. В riskFlags укажи сомнения: устаревший сайт, только общий контакт, неясный объём и подобное. companySize должен содержать строго одно значение: Малое, Среднее, Крупное или Неизвестно; основание размера вынеси в fitReasons. estimatedOrderKg — консервативная оценка возможной партии, 0 если оценить нельзя.\n\nНе возвращай филиалы ранее найденных компаний, посредников, трейдеров, магазины и каталоги. Каталоги можно использовать только для обнаружения официального сайта. Не придумывай сведения. Сохраняй компанию только при наличии прямого контакта: email, официальный Telegram или WhatsApp. Если найден телефон, ищи этот же номер на официальной странице контактов. contactWhatsapp заполняй только опубликованной ссылкой wa.me/whatsapp.com с тем же номером, что contactPhone. contactTelegram заполняй только официальной ссылкой t.me/telegram.me с сайта компании; Telegram нельзя угадывать по номеру. Неподтверждённый канал оставляй пустым. contactName и contactRole заполняй только при наличии источника, иначе оставляй пустыми. Для всех ключевых утверждений добавь evidence с точным URL и короткой выдержкой. Обращение должно упоминать деятельность компании, подходящую продукцию MRBA и минимальную партию, но не выдумывать цену. Не отправляй сообщения.`,
+      input: `Ты квалифицируешь уже найденные и технически проверенные официальные сайты потенциальных B2B-покупателей MRBA. Интернет не ищи и контакты не придумывай. Верни по одной оценке на каждый переданный website.\n\nПродукция: ${config.productNames.join(", ")}.\nСтраны: ${config.countries.join(", ")}.\nМинимальная партия: ${config.minimumOrderKg} кг.\nЖелаемые покупатели: ${config.buyerTypes.join(", ")}.\nПосредники запрещены: ${config.intermediaryMode === "MANUFACTURERS_ONLY" ? "да" : "нет"}.\n\nОпыт прошлых результатов:\n${outcomeLearnings || "Пока нет накопленных результатов."}\n\nДля каждого сайта: определи реальную деятельность и отрасль; реши, применяет ли предприятие латунные или медные прутки; исключи посредников, каталоги и магазины; консервативно оцени возможную партию; оцени соответствие 0–100; составь персональный черновик обращения на языке сайта. scoreExplanation должен содержать 3–5 конкретных предложений: чем занимается компания, где ей могут понадобиться прутки, почему предполагается указанный объём, насколько надёжен контакт и что ещё нужно уточнить. В fitReasons дай 3–5 отдельных доказательных пунктов, а не общие фразы. contactName/contactRole укажи лишь когда они явно присутствуют в переданном тексте, иначе оставь пустыми. Не добавляй новые компании, сайты или контакты. Не заявляй неподтверждённые факты.\n\nКандидаты (текст уже очищен сервером):\n${JSON.stringify(compactCandidates)}`,
     }),
     signal: AbortSignal.any([signal, AbortSignal.timeout(180000)]),
   });
   if (!response.ok) throw new Error(`OpenAI: ${response.status} ${await response.text()}`);
   const payload = await response.json() as any;
-  const outputText = payload.output_text ?? payload.output?.flatMap((item: any) => item.content ?? []).find((item: any) => item.type === "output_text")?.text;
-  if (!outputText) throw new Error("OpenAI не вернул результат поиска");
-  const parsed = JSON.parse(outputText) as { candidates: DiscoveredLead[] };
-  return parsed.candidates.map((lead) => ({
-    ...lead,
-    contactTelegram: verifiedTelegramUrl(lead.contactTelegram) || "",
-    contactWhatsapp: verifiedWhatsappUrl(lead.contactWhatsapp, lead.contactPhone) || "",
-  })).filter((lead) => lead.contactEmail || lead.contactTelegram || lead.contactWhatsapp);
+  return parseLeadResponsePayload(payload) as QualifiedLead[];
 }
 
 @Controller("lead-agent")
 @UseGuards(AccessGuard)
-export class LeadAgentController {
+export class LeadAgentController implements OnModuleInit {
   private runningSearches = new Map<string, AbortController>();
+  private readonly logger = new Logger(LeadAgentController.name);
 
   constructor(
     private db: Database,
     private ops: OperationsService,
   ) {}
+
+  async onModuleInit() {
+    const recovered = await this.db.leadSearchRun.updateMany({
+      where: { status: "RUNNING" },
+      data: {
+        status: "FAILED",
+        progressStage: "FAILED",
+        errorMessage: "Поиск остановлен из-за перезапуска сервера. Запустите его повторно.",
+        completedAt: new Date(),
+      },
+    });
+    if (recovered.count) this.logger.warn(`Recovered ${recovered.count} interrupted lead searches`);
+  }
 
   @Get("overview")
   @Allow("factory.write")
@@ -236,6 +222,7 @@ export class LeadAgentController {
     if (!config) config = await this.db.leadAgentConfig.create({ data: { id: "default", productNames: [...defaultLeadConfig.productNames], countries: [...defaultLeadConfig.countries], minimumOrderKg: defaultLeadConfig.minimumOrderKg, buyerTypes: [...defaultLeadConfig.buyerTypes], outreachLanguages: [...defaultLeadConfig.outreachLanguages], intermediaryMode: defaultLeadConfig.intermediaryMode } });
     const [candidates, runs, products] = await Promise.all([
       this.db.leadCandidate.findMany({
+        where: { score: { gte: MIN_LEAD_SCORE } },
         orderBy: [{ createdAt: "desc" }, { score: "desc" }],
         take: 100,
         include: { evidence: true, statusEvents: { orderBy: { createdAt: "desc" }, take: 20, include: { actor: { select: { name: true } } } } },
@@ -333,14 +320,15 @@ export class LeadAgentController {
   private async executeRun(runId: string, config: any, limit: number, controller: AbortController) {
     try {
       const existing = await this.db.leadCandidate.findMany({
-        select: { companyName: true, normalizedWebsite: true },
+        select: { companyName: true, normalizedWebsite: true, contactEmail: true, contactPhone: true },
         orderBy: { createdAt: "desc" },
-        take: 300,
       });
       const excludedDomains = new Set(existing.map((item) => item.normalizedWebsite));
       const excludedNames = new Set(existing.map((item) => item.companyName.trim().toLocaleLowerCase("ru")));
+      const excludedEmails = new Set(existing.map((item) => item.contactEmail?.trim().toLowerCase()).filter(Boolean));
+      const excludedPhones = new Set(existing.map((item) => item.contactPhone?.replace(/\D/g, "")).filter(Boolean));
       const collected = new Map<string, DiscoveredLead>();
-      const exclusions = [...existing];
+      const rejected = new Map<string, DiscoveredLead>();
       const pastOutcomes = await this.db.leadCandidate.findMany({
         where: { status: { in: ["CUSTOMER", "NEGOTIATION", "QUOTE_REQUESTED", "REJECTED"] } },
         select: { companyName: true, industry: true, status: true, scoreExplanation: true, statusEvents: { orderBy: { createdAt: "desc" }, take: 1, select: { note: true } } },
@@ -350,33 +338,72 @@ export class LeadAgentController {
       const outcomeLearnings = pastOutcomes.map((item) =>
         `- ${item.status}: ${item.companyName}; отрасль: ${item.industry || "не указана"}; ${item.statusEvents[0]?.note || item.scoreExplanation}`,
       ).join("\n");
-      for (let attempt = 0; attempt < 3 && collected.size < limit; attempt++) {
-        await this.db.leadSearchRun.update({ where: { id: runId }, data: { progressStage: attempt === 0 ? "DISCOVERING" : "EXPANDING" } });
-        const batch = await discoverLeads(config, limit - collected.size, exclusions, outcomeLearnings, controller.signal);
+      await this.db.leadSearchRun.update({ where: { id: runId }, data: { progressStage: "DISCOVERING" } });
+      const discovered = await discoverLeadSites(config, limit, excludedDomains, controller.signal);
+      this.logger.log(`Run ${runId}: code discovery verified ${discovered.length} new sites`);
+      if (controller.signal.aborted) throw new Error("SEARCH_CANCELLED");
+      await this.db.leadSearchRun.update({ where: { id: runId }, data: { progressStage: "VALIDATING" } });
+
+      const uniqueDiscovered = discovered.filter((lead) => {
+        const normalizedName = lead.companyName.trim().toLocaleLowerCase("ru");
+        const email = lead.contactEmail.trim().toLowerCase();
+        const phone = lead.contactPhone.replace(/\D/g, "");
+        if (excludedNames.has(normalizedName) || (email && excludedEmails.has(email)) || (phone && excludedPhones.has(phone))) return false;
+        excludedNames.add(normalizedName);
+        if (email) excludedEmails.add(email);
+        if (phone) excludedPhones.add(phone);
+        return true;
+      });
+      this.logger.log(`Run ${runId}: ${uniqueDiscovered.length} sites remained after duplicate checks`);
+
+      await this.db.leadSearchRun.update({ where: { id: runId }, data: { progressStage: "SCORING" } });
+      let assessedCount = 0;
+      let bestRejectedScore = 0;
+      for (let index = 0; index < uniqueDiscovered.length && collected.size < limit; index += 8) {
         if (controller.signal.aborted) throw new Error("SEARCH_CANCELLED");
-        await this.db.leadSearchRun.update({ where: { id: runId }, data: { progressStage: "VALIDATING" } });
-        for (const lead of batch) {
+        const sourceBatch = uniqueDiscovered.slice(index, index + 8);
+        const qualified = await qualifyLeads(config, sourceBatch, outcomeLearnings, controller.signal);
+        assessedCount += qualified.length;
+        this.logger.log(`Run ${runId}: OpenAI qualified ${qualified.length} of ${sourceBatch.length} checked sites; scores: ${qualified.map((item) => {
+          try { return `${normalizeWebsiteDomain(item.website)}=${item.score}`; } catch { return `invalid-url=${item.score}`; }
+        }).join(", ")}`);
+        const sourceByDomain = new Map(sourceBatch.map((lead) => [normalizeWebsiteDomain(lead.website), lead]));
+        for (const assessment of qualified) {
           let domain: string;
-          try { domain = normalizeWebsite(lead.website); } catch { continue; }
-          const normalizedName = lead.companyName.trim().toLocaleLowerCase("ru");
-          if (excludedDomains.has(domain) || excludedNames.has(normalizedName) || collected.has(domain)) continue;
-          collected.set(domain, lead);
-          excludedDomains.add(domain);
-          excludedNames.add(normalizedName);
-          exclusions.push({ companyName: lead.companyName, normalizedWebsite: domain });
+          try { domain = normalizeWebsiteDomain(assessment.website); } catch { continue; }
+          const source = sourceByDomain.get(domain);
+          if (!source || collected.has(domain) || rejected.has(domain)) continue;
+          const merged: DiscoveredLead = {
+            ...assessment,
+            companyName: source.companyName,
+            website: source.website,
+            country: source.country,
+            contactEmail: source.contactEmail,
+            contactPhone: source.contactPhone,
+            contactTelegram: source.contactTelegram,
+            contactWhatsapp: source.contactWhatsapp,
+            evidence: source.evidence,
+          };
+          if (assessment.estimatedOrderKg < config.minimumOrderKg || assessment.score < MIN_LEAD_SCORE) {
+            bestRejectedScore = Math.max(bestRejectedScore, assessment.score);
+            rejected.set(domain, merged);
+            continue;
+          }
+          if (!assessment.industry.trim() || !assessment.fitReasons.length || !assessment.outreachText.trim()) continue;
+          collected.set(domain, merged);
+          if (collected.size >= limit) break;
         }
         await this.db.leadSearchRun.update({ where: { id: runId }, data: { foundCount: collected.size } });
       }
-      const leads = [...collected.values()];
+      const leads = [...collected.values()].sort((left, right) => right.score - left.score).slice(0, limit);
       if (controller.signal.aborted) throw new Error("SEARCH_CANCELLED");
-      await this.db.leadSearchRun.update({ where: { id: runId }, data: { progressStage: "SCORING", foundCount: leads.length } });
       await this.db.leadSearchRun.update({ where: { id: runId }, data: { progressStage: "SAVING" } });
       await this.db.$transaction(async (tx) => {
-        for (const lead of leads) {
+        for (const lead of [...leads, ...rejected.values()]) {
           if (controller.signal.aborted) throw new Error("SEARCH_CANCELLED");
           let normalizedWebsite: string;
-          try { normalizedWebsite = normalizeWebsite(lead.website); } catch { continue; }
-          const candidate = await tx.leadCandidate.create({ data: { runId, companyName: lead.companyName, normalizedWebsite, website: lead.website, country: lead.country || null, city: lead.city || null, industry: lead.industry || null, companySize: lead.companySize || null, estimatedOrderKg: lead.estimatedOrderKg || null, fitReasons: clean(lead.fitReasons || []), riskFlags: clean(lead.riskFlags || []), score: lead.score, scoreExplanation: lead.scoreExplanation, contactName: lead.contactName || null, contactRole: lead.contactRole || null, contactEmail: lead.contactEmail || null, contactPhone: lead.contactPhone || null, contactTelegram: lead.contactTelegram || null, contactWhatsapp: lead.contactWhatsapp || null, outreachLanguage: lead.outreachLanguage || null, outreachText: lead.outreachText || null, lastVerifiedAt: new Date() } });
+          try { normalizedWebsite = normalizeWebsiteDomain(lead.website); } catch { continue; }
+          const candidate = await tx.leadCandidate.create({ data: { runId, companyName: lead.companyName, normalizedWebsite, website: lead.website, country: lead.country || null, city: lead.city || null, industry: lead.industry || null, companySize: lead.companySize || null, estimatedOrderKg: lead.estimatedOrderKg || null, fitReasons: clean(lead.fitReasons || []), riskFlags: clean(lead.riskFlags || []), score: lead.score, scoreExplanation: lead.scoreExplanation, status: lead.score >= MIN_LEAD_SCORE && lead.estimatedOrderKg >= config.minimumOrderKg ? "NEW" : "REJECTED", contactName: lead.contactName || null, contactRole: lead.contactRole || null, contactEmail: lead.contactEmail || null, contactPhone: lead.contactPhone || null, contactTelegram: lead.contactTelegram || null, contactWhatsapp: lead.contactWhatsapp || null, outreachLanguage: lead.outreachLanguage || null, outreachText: lead.outreachText || null, lastVerifiedAt: new Date() } });
           await tx.leadEvidence.deleteMany({ where: { candidateId: candidate.id } });
           const uniqueEvidence = [...new Map(
             lead.evidence
@@ -389,7 +416,20 @@ export class LeadAgentController {
           });
         }
         if (controller.signal.aborted) throw new Error("SEARCH_CANCELLED");
-        await tx.leadSearchRun.update({ where: { id: runId }, data: { status: "COMPLETED", progressStage: "COMPLETED", foundCount: leads.length, completedAt: new Date() } });
+        await tx.leadSearchRun.update({
+          where: { id: runId },
+          data: {
+            status: "COMPLETED",
+            progressStage: "COMPLETED",
+            foundCount: leads.length,
+            resultMessage: leads.length < limit
+              ? discovered.length === 0
+                ? `Найдено 0 из ${limit}: в расширенной поисковой выдаче не осталось новых официальных сайтов с подтверждёнными контактами.`
+                : `Найдено ${leads.length} из ${limit}: проверено сайтов — ${discovered.length}, оценено — ${assessedCount}, лучший отклонённый рейтинг — ${bestRejectedScore || 0}. Кандидаты ниже ${MIN_LEAD_SCORE} и не соответствующие минимальной партии пропущены.`
+              : `Найдено и проверено ${leads.length} из ${limit} кандидатов.`,
+            completedAt: new Date(),
+          },
+        });
       });
     } catch (error) {
       if (controller.signal.aborted || (error instanceof Error && error.message === "SEARCH_CANCELLED")) {

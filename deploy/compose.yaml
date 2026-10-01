@@ -42,6 +42,7 @@ services:
       JWT_SECRET: ${JWT_SECRET:?Set JWT secret}
       RECOVERY_EPOCH: ${RECOVERY_EPOCH:?Set recovery epoch}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      WEB_ORIGINS: ${WEB_ORIGINS:-}
     depends_on:
       migrate: {condition: service_completed_successfully}
     networks: [database, frontend]

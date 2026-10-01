@@ -12,7 +12,7 @@
   "scripts": {
     "build": "npm run build -w @mrba/domain && npm run build -w @mrba/api",
     "typecheck": "npm run build && npm run typecheck -w @mrba/mobile",
-    "test": "npm run build && node --test packages/domain/dist/*.test.js",
+    "test": "npm run build && node --test packages/domain/dist/*.test.js apps/api/dist/*.test.js",
     "test:integration": "node scripts/integration.mjs",
     "dev:api": "npm run dev -w @mrba/api",
     "dev:mobile": "node scripts/mobile.mjs",

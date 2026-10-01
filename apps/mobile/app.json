@@ -23,7 +23,9 @@
       "icon": "./assets/mrba-icon.png"
     },
     "web": {
-      "favicon": "./assets/favicon.png"
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro",
+      "output": "single"
     },
     "plugins": [
       [

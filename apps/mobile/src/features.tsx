@@ -3050,10 +3050,11 @@ type LeadOverview = {
     nextContactAt?: string;
     lastContactedAt?: string;
     lastVerifiedAt: string;
+    createdAt: string;
     evidence: Array<{ id: string; url: string; title?: string; excerpt?: string }>;
     statusEvents: Array<{ id: string; status: string; note?: string; createdAt: string; actor: { name: string } }>;
   }>;
-  runs: Array<{ id: string; status: string; progressStage: string; targetCount: number; foundCount: number; createdAt: string; startedAt?: string; completedAt?: string; errorMessage?: string }>;
+  runs: Array<{ id: string; status: string; progressStage: string; targetCount: number; foundCount: number; createdAt: string; startedAt?: string; completedAt?: string; errorMessage?: string; resultMessage?: string }>;
 };
 
 const leadStatus: Record<string, string> = {
@@ -3101,8 +3102,8 @@ export function LeadAgent() {
     return () => clearInterval(timer);
   }, [overview?.runs[0]?.status]);
   const activeRun = overview?.runs[0];
-  const stageProgress: Record<string, number> = { DISCOVERING: 20, EXPANDING: 35, VALIDATING: 58, SCORING: 78, SAVING: 92, COMPLETED: 100 };
-  const progress = activeRun ? (stageProgress[activeRun.progressStage] ?? 12) : 0;
+  const progress = activeRun?.targetCount ? Math.min(100, Math.round(activeRun.foundCount / activeRun.targetCount * 100)) : 0;
+  const latestCompletedRun = overview?.runs.find((run) => run.status === "COMPLETED");
   const stageLabel: Record<string, string> = { DISCOVERING: "Ищем предприятия", EXPANDING: "Ищем дополнительные компании", VALIDATING: "Проверяем сайты и контакты", SCORING: "Оцениваем кандидатов", SAVING: "Сохраняем результаты" };
   const elapsedSeconds = activeRun?.startedAt ? Math.max(0, Math.floor((clock - new Date(activeRun.startedAt).getTime()) / 1000)) : 0;
   const changeStatus = async (id: string, next: string) => {
@@ -3272,6 +3273,12 @@ export function LeadAgent() {
           <Text style={s.leadSafetyText}>Только новые компании · сообщения отправляете вы</Text>
         </View>
         {overview?.runs[0]?.status === "FAILED" && <Text style={[s.error, { marginTop: 8 }]}>Последний поиск завершился ошибкой: {overview.runs[0].errorMessage}</Text>}
+        {activeRun?.status !== "RUNNING" && !!latestCompletedRun?.resultMessage && (
+          <View style={s.leadRunSummary}>
+            <Ionicons name={latestCompletedRun.foundCount >= latestCompletedRun.targetCount ? "checkmark-circle-outline" : "information-circle-outline"} size={16} color={c.green} />
+            <Text style={s.leadRunSummaryText}>{latestCompletedRun.resultMessage}</Text>
+          </View>
+        )}
       </Card>
       {error ? <Text style={s.error}>{error}</Text> : null}
       {!!overview?.candidates.length && (
@@ -3287,7 +3294,7 @@ export function LeadAgent() {
       {!overview?.candidates.length ? (
         <Empty text="После настройки здесь появятся компании, рейтинг, контакты и ссылки на источники." />
       ) : overview.candidates.map((lead) => {
-        const isNew = lead.runId === overview.latestCompletedRunId;
+        const isNew = lead.runId === overview.latestCompletedRunId && Date.now() - new Date(lead.createdAt).getTime() < 24 * 60 * 60 * 1000;
         return (
         <Card key={lead.id} style={[s.leadCard, isNew && s.newLeadCard]}>
           <View style={s.leadCardHeader}>
@@ -3315,7 +3322,7 @@ export function LeadAgent() {
               <Text style={s.leadStatusText}>{leadStatus[lead.status] ?? lead.status}</Text>
             </View>
           </View>
-          <Text style={s.leadExplanation} numberOfLines={3}>{lead.scoreExplanation}</Text>
+          <Text style={s.leadExplanation} numberOfLines={6}>{lead.scoreExplanation}</Text>
           <View style={s.leadIntelligenceRow}>
             {!!lead.companySize && <View style={s.leadIntelligencePill}><Ionicons name="business-outline" size={13} color={c.blue} /><Text style={s.leadIntelligenceText}>{lead.companySize.split(":")[0]}</Text></View>}
             {!!lead.estimatedOrderKg && <View style={s.leadIntelligencePill}><Ionicons name="scale-outline" size={13} color={c.green} /><Text style={s.leadIntelligenceText}>≈ {lead.estimatedOrderKg.toLocaleString("ru-RU")} кг</Text></View>}
@@ -3502,6 +3509,8 @@ const s = StyleSheet.create({
   },
   leadSafetyNote: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, marginTop: 10 },
   leadSafetyText: { flexShrink: 1, textAlign: "center", fontSize: 11, lineHeight: 16, color: c.muted },
+  leadRunSummary: { flexDirection: "row", alignItems: "flex-start", gap: 7, marginTop: 10, padding: 10, borderRadius: 12, backgroundColor: "#EAF7F2" },
+  leadRunSummaryText: { flex: 1, fontSize: 11, lineHeight: 16, color: c.green },
   leadFunnel: { flexDirection: "row", alignItems: "center", marginBottom: 12, paddingVertical: 10, paddingHorizontal: 8, borderRadius: 14, backgroundColor: c.white, borderWidth: 1, borderColor: c.line },
   leadFunnelItem: { flex: 1, alignItems: "center" },
   leadFunnelValue: { fontSize: 17, lineHeight: 20, fontWeight: "800", color: c.blue },

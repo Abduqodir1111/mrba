@@ -114,6 +114,23 @@ export async function createApp() {
   const app = await NestFactory.create(AppModule, new ExpressAdapter(), {
     logger: ["error", "warn", "log"],
   });
+  const webOrigins = (process.env.WEB_ORIGINS ?? "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+  if (webOrigins.length)
+    app.enableCors({
+      origin: webOrigins,
+      methods: ["GET", "POST", "OPTIONS"],
+      allowedHeaders: [
+        "Authorization",
+        "Content-Type",
+        "Idempotency-Key",
+        "X-Recovery-Epoch",
+      ],
+      credentials: false,
+      maxAge: 86400,
+    });
   if (process.env.NODE_ENV === "production")
     app.getHttpAdapter().getInstance().set("trust proxy", 1);
   app.use(helmet());
