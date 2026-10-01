@@ -1,7 +1,7 @@
 import {
   KeyboardAwareScrollView,
   KeyboardProvider,
-} from "react-native-keyboard-controller";
+} from "./keyboard-layout";
 import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,

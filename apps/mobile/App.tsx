@@ -1,7 +1,7 @@
 import {
   KeyboardAwareScrollView,
   KeyboardProvider,
-} from "react-native-keyboard-controller";
+} from "./src/keyboard-layout";
 import { Workspace, Reports, CatalogActions, LeadAgent } from "./src/features";
 import Decimal from "decimal.js";
 import React, { useEffect, useState } from "react";
@@ -353,6 +353,7 @@ function FactoryApp() {
                 autoCapitalize="none"
                 autoCorrect={false}
                 textContentType="username"
+                autoComplete="username"
                 value={loginName}
                 onChangeText={setLoginName}
               />
@@ -361,6 +362,9 @@ function FactoryApp() {
                 placeholder="Введите пароль"
                 secureTextEntry
                 textContentType="password"
+                autoComplete="current-password"
+                autoCapitalize="none"
+                autoCorrect={false}
                 value={password}
                 onChangeText={setPassword}
               />
