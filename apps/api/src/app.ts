@@ -22,6 +22,7 @@ import { CorrectionsController } from "./corrections";
 import { ReportsController } from "./reports";
 import { RecoveryController } from "./recovery";
 import { SalesController } from "./sales";
+import { LeadAgentController } from "./leads";
 import { FactoryService, FactoryController } from "./factory";
 import { Database } from "./db";
 import { AccessGuard, AuthService, AuthController } from "./identity";
@@ -89,6 +90,7 @@ class Errors implements ExceptionFilter {
     ReportsController,
     CorrectionsController,
     AdminController,
+    LeadAgentController,
   ],
   providers: [
     Database,
@@ -112,6 +114,23 @@ export async function createApp() {
   const app = await NestFactory.create(AppModule, new ExpressAdapter(), {
     logger: ["error", "warn", "log"],
   });
+  const webOrigins = (process.env.WEB_ORIGINS ?? "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+  if (webOrigins.length)
+    app.enableCors({
+      origin: webOrigins,
+      methods: ["GET", "POST", "OPTIONS"],
+      allowedHeaders: [
+        "Authorization",
+        "Content-Type",
+        "Idempotency-Key",
+        "X-Recovery-Epoch",
+      ],
+      credentials: false,
+      maxAge: 86400,
+    });
   if (process.env.NODE_ENV === "production")
     app.getHttpAdapter().getInstance().set("trust proxy", 1);
   app.use(helmet());

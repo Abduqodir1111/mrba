@@ -6,8 +6,10 @@ import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Linking,
   Modal,
   Pressable,
+  Share,
   StyleSheet,
   Switch,
   Text,
@@ -88,6 +90,20 @@ const date = (v: string) =>
     hour: "2-digit",
     minute: "2-digit",
   });
+const actionIcon = (title: string, danger: boolean) => {
+  if (danger) return "trash-outline";
+  const value = title.toLocaleLowerCase("ru");
+  if (value.includes("продат") || value.includes("продаж")) return "cash-outline";
+  if (value.includes("принять") || value.includes("загрузить")) return "download-outline";
+  if (value.includes("завершить") || value.includes("готов")) return "checkmark-circle-outline";
+  if (value.includes("начать") || value.includes("создать") || value.startsWith("+")) return "add-circle-outline";
+  if (value.includes("показать") || value.includes("открыть")) return "eye-outline";
+  if (value.includes("повторить") || value.includes("обновить")) return "refresh-outline";
+  if (value.includes("убрать") || value.includes("отмен")) return "remove-circle-outline";
+  if (value.includes("выдать") || value.includes("отгруз")) return "arrow-forward-circle-outline";
+  if (value.includes("сохран")) return "checkmark-outline";
+  return "arrow-forward-outline";
+};
 export const Btn = ({
   title,
   onPress,
@@ -100,40 +116,30 @@ export const Btn = ({
   secondary?: boolean;
   danger?: boolean;
   disabled?: boolean;
-}) => (
-  <Pressable
+}) => {
+  const icon = actionIcon(title, danger);
+  const displayTitle = title.replace(/^\+\s*/, "");
+  return <Pressable
     accessibilityRole="button"
     disabled={disabled}
     onPress={onPress}
-    style={[
-      s.button,
-      secondary && s.secondary,
-      danger && {
-        backgroundColor: "#FCECEC",
-        flexDirection: "row",
-        gap: 8,
-        alignItems: "center",
-        justifyContent: "center",
-      },
-      disabled && { opacity: 0.4 },
-    ]}
+    style={({ pressed }) => [s.button, secondary && s.secondary, danger && s.dangerButton, pressed && !disabled && s.buttonPressed, disabled && s.buttonDisabled]}
   >
-    {danger && (
-      <Ionicons name="close-circle-outline" size={22} color="#B84040" />
-    )}
+    <Ionicons name={icon as any} size={17} color={danger ? "#B84040" : secondary ? c.blue : c.white} />
     <Text
       style={[
         s.buttonText,
         secondary && { color: c.blue },
         danger && { color: "#B84040" },
       ]}
+      numberOfLines={2}
     >
-      {title}
+      {displayTitle}
     </Text>
   </Pressable>
-);
-const Card = ({ children }: { children: React.ReactNode }) => (
-  <View style={s.card}>{children}</View>
+};
+const Card = ({ children, style }: { children: React.ReactNode; style?: any }) => (
+  <View style={[s.card, style]}>{children}</View>
 );
 const Title = ({ title, sub }: { title: string; sub?: string }) => (
   <View style={{ marginBottom: 20 }}>
@@ -402,15 +408,16 @@ function Editor({
                 accessibilityLabel="Закрыть"
                 disabled={busy}
                 onPress={close}
+                style={({ pressed }) => [s.modalClose, pressed && { opacity: 0.6 }]}
               >
-                <Ionicons name="close-circle" color={c.muted} size={30} />
+                <Ionicons name="close" color={c.ink} size={20} />
               </Pressable>
             </View>
             <KeyboardAwareScrollView
               bottomOffset={24}
               keyboardDismissMode="on-drag"
               keyboardShouldPersistTaps="handled"
-              contentContainerStyle={{ padding: 22, paddingBottom: 40 }}
+              contentContainerStyle={{ padding: 16, paddingBottom: 24 }}
             >
               {form.subtitle && (
                 <Text style={[s.muted, { marginBottom: 20 }]}>
@@ -435,7 +442,7 @@ function Editor({
                 </View>
               )}
               {fields.map((f) => (
-                <View key={f.key} style={{ marginBottom: 20 }}>
+                <View key={f.key} style={{ marginBottom: 14 }}>
                   <Text style={s.label}>
                     {f.label}
                     {f.weight ? ` · ${weightUnit === "kg" ? "кг" : "т"}` : ""}
@@ -741,21 +748,22 @@ function Editor({
                 </View>
               )}
               {!!error && <Text style={s.error}>{error}</Text>}
-              <Btn
-                title={busy ? "Сохранение…" : actionLabel}
-                disabled={busy || invalidCompletionWeight || invalidSale}
-                onPress={() =>
-                  Alert.alert(
-                    `${actionLabel}?`,
-                    "После подтверждения операция будет сохранена на сервере.",
-                    [
-                      { text: "Назад", style: "cancel" },
-                      { text: actionLabel, onPress: () => void save() },
-                    ],
-                  )
-                }
-              />
             </KeyboardAwareScrollView>
+            <View style={s.modalFooter}>
+              <Btn
+                secondary
+                title="Отмена"
+                disabled={busy}
+                onPress={close}
+              />
+              <View style={{ flex: 1 }}>
+                <Btn
+                  title={busy ? "Сохранение…" : actionLabel}
+                  disabled={busy || invalidCompletionWeight || invalidSale}
+                  onPress={() => void save()}
+                />
+              </View>
+            </View>
           </View>
         </SafeAreaView>
       </KeyboardProvider>
@@ -3011,7 +3019,682 @@ export function Reports() {
     </View>
   );
 }
+type LeadOverview = {
+  latestCompletedRunId?: string | null;
+  config: { productNames: string[]; countries: string[]; minimumOrderKg?: number; buyerTypes: string[]; outreachLanguages: string[]; intermediaryMode: string };
+  readiness: { parametersReady: boolean; providerReady: boolean; missing: string[] };
+  candidates: Array<{
+    id: string;
+    runId: string;
+    companyName: string;
+    website: string;
+    country?: string;
+    city?: string;
+    industry?: string;
+    companySize?: string;
+    estimatedOrderKg?: number;
+    fitReasons: string[];
+    riskFlags: string[];
+    score: number;
+    scoreExplanation: string;
+    status: string;
+    contactEmail?: string;
+    contactPhone?: string;
+    contactName?: string;
+    contactRole?: string;
+    contactTelegram?: string;
+    contactWhatsapp?: string;
+    outreachLanguage?: string;
+    outreachText?: string;
+    internalNotes?: string;
+    nextContactAt?: string;
+    lastContactedAt?: string;
+    lastVerifiedAt: string;
+    createdAt: string;
+    evidence: Array<{ id: string; url: string; title?: string; excerpt?: string }>;
+    statusEvents: Array<{ id: string; status: string; note?: string; createdAt: string; actor: { name: string } }>;
+  }>;
+  runs: Array<{ id: string; status: string; progressStage: string; targetCount: number; foundCount: number; createdAt: string; startedAt?: string; completedAt?: string; errorMessage?: string; resultMessage?: string }>;
+};
+
+const leadStatus: Record<string, string> = {
+  NEW: "Новый",
+  VERIFIED: "Проверен",
+  CONTACTED: "Связались",
+  RESPONDED: "Ответил",
+  QUOTE_REQUESTED: "Запросил цену",
+  NEGOTIATION: "Переговоры",
+  CUSTOMER: "Клиент",
+  REJECTED: "Отказ",
+};
+
+const telegramUrl = (value: string) => value.startsWith("http") ? value : `https://t.me/${value.replace(/^@/, "")}`;
+const whatsappUrl = (value: string) => value.startsWith("http") ? value : `https://wa.me/${value.replace(/\D/g, "")}`;
+
+export function LeadAgent() {
+  const [overview, setOverview] = useState<LeadOverview | null>(null);
+  const [busy, setBusy] = useState(true);
+  const [error, setError] = useState("");
+  const [candidateLimit, setCandidateLimit] = useState("1");
+  const [clock, setClock] = useState(Date.now());
+  const [expandedLeadId, setExpandedLeadId] = useState<string | null>(null);
+  const [noteLeadId, setNoteLeadId] = useState<string | null>(null);
+  const [noteText, setNoteText] = useState("");
+  const [nextContactDate, setNextContactDate] = useState("");
+  const load = async () => {
+    setBusy(true);
+    try {
+      setOverview(await api<LeadOverview>("/lead-agent/overview"));
+      setError("");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  useEffect(() => void load(), []);
+  useEffect(() => {
+    if (overview?.runs[0]?.status !== "RUNNING") return;
+    const timer = setInterval(() => {
+      setClock(Date.now());
+      void load();
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [overview?.runs[0]?.status]);
+  const activeRun = overview?.runs[0];
+  const progress = activeRun?.targetCount ? Math.min(100, Math.round(activeRun.foundCount / activeRun.targetCount * 100)) : 0;
+  const latestCompletedRun = overview?.runs.find((run) => run.status === "COMPLETED");
+  const stageLabel: Record<string, string> = { DISCOVERING: "Ищем предприятия", EXPANDING: "Ищем дополнительные компании", VALIDATING: "Проверяем сайты и контакты", SCORING: "Оцениваем кандидатов", SAVING: "Сохраняем результаты" };
+  const elapsedSeconds = activeRun?.startedAt ? Math.max(0, Math.floor((clock - new Date(activeRun.startedAt).getTime()) / 1000)) : 0;
+  const changeStatus = async (id: string, next: string) => {
+    try {
+      await mutate(`/lead-agent/candidates/${id}/status`, { status: next });
+      await load();
+    } catch (e) {
+      Alert.alert("Не удалось изменить статус", (e as Error).message);
+    }
+  };
+  const start = async () => {
+    const limit = Number(candidateLimit);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
+      Alert.alert("Проверьте количество", "Укажите целое число от 1 до 50.");
+      return;
+    }
+    try {
+      await mutate("/lead-agent/runs", { limit });
+      await load();
+      Alert.alert("Поиск начат", "Агент ищет и проверяет компании. Результаты появятся в карточках через несколько минут.");
+    } catch (e) {
+      Alert.alert("Поиск пока недоступен", (e as Error).message);
+    }
+  };
+  const cancelSearch = async () => {
+    if (!activeRun || activeRun.status !== "RUNNING") return;
+    try {
+      await mutate(`/lead-agent/runs/${activeRun.id}/cancel`, {});
+      await load();
+    } catch (e) {
+      Alert.alert("Не удалось отменить поиск", (e as Error).message);
+    }
+  };
+  const saveLeadNote = async (id: string) => {
+    const note = noteText.trim();
+    if (!note) return Alert.alert("Добавьте заметку", "Напишите результат разговора или следующий шаг.");
+    if (nextContactDate && !/^\d{4}-\d{2}-\d{2}$/.test(nextContactDate)) return Alert.alert("Проверьте дату", "Используйте формат ГГГГ-ММ-ДД.");
+    try {
+      await mutate(`/lead-agent/candidates/${id}/note`, { note, nextContactAt: nextContactDate ? new Date(`${nextContactDate}T09:00:00+05:00`).toISOString() : undefined });
+      setNoteText("");
+      setNextContactDate("");
+      setNoteLeadId(null);
+      await load();
+    } catch (e) {
+      Alert.alert("Не удалось сохранить", (e as Error).message);
+    }
+  };
+  const promoteLead = async (id: string) => {
+    try {
+      await mutate(`/lead-agent/candidates/${id}/promote`, {});
+      await load();
+      Alert.alert("Клиент добавлен", "Компания перенесена в справочник клиентов.");
+    } catch (e) {
+      Alert.alert("Не удалось добавить клиента", (e as Error).message);
+    }
+  };
+  const funnel = {
+    new: overview?.candidates.filter((lead) => ["NEW", "VERIFIED"].includes(lead.status)).length ?? 0,
+    active: overview?.candidates.filter((lead) => ["CONTACTED", "RESPONDED", "QUOTE_REQUESTED", "NEGOTIATION"].includes(lead.status)).length ?? 0,
+    customers: overview?.candidates.filter((lead) => lead.status === "CUSTOMER").length ?? 0,
+  };
+  if (busy && !overview) return <ActivityIndicator color={c.blue} />;
+  return (
+    <View>
+      {activeRun?.status === "RUNNING" && (
+        <View style={s.searchProgress}>
+          <View style={s.searchProgressHeader}>
+            <View style={s.searchPulse}>
+              <ActivityIndicator size="small" color="white" />
+            </View>
+            <View style={s.searchProgressTitle}>
+              <Text style={s.searchProgressEyebrow}>ИИ-АГЕНТ РАБОТАЕТ</Text>
+              <Text style={s.searchProgressHeading} numberOfLines={1}>
+                {stageLabel[activeRun.progressStage] || "Готовим поиск"}
+              </Text>
+            </View>
+            <View style={s.searchCountPill}>
+              <Text style={s.searchCountValue}>{activeRun.foundCount}</Text>
+              <Text style={s.searchCountTarget}>из {activeRun.targetCount}</Text>
+            </View>
+          </View>
+          <View style={s.progressTrack}>
+            <View style={[s.progressFill, { width: `${progress}%` }]} />
+          </View>
+          <View style={s.searchMetaRow}>
+            <View style={s.searchMetaItem}>
+              <Ionicons name="time-outline" size={16} color={c.muted} />
+              <Text style={s.searchMetaText}>{elapsedSeconds} сек.</Text>
+            </View>
+            <View style={s.searchMetaItem}>
+              <Ionicons name="business-outline" size={16} color={c.muted} />
+              <Text style={s.searchMetaText} numberOfLines={1}>
+                {activeRun.foundCount ? `Найдено: ${activeRun.foundCount}` : "Проверяем сайты"}
+              </Text>
+            </View>
+          </View>
+          <Text style={s.searchProgressHint} numberOfLines={2}>
+            {activeRun.progressStage === "SCORING" || activeRun.progressStage === "SAVING"
+              ? "Считаем рейтинг и создаём карточки лучших кандидатов"
+              : "Проверяем производство, потребность, ответственных сотрудников и контакты"}
+          </Text>
+          <Pressable style={s.cancelSearchButton} onPress={() => void cancelSearch()}>
+            <Ionicons name="stop-circle-outline" size={18} color="#B84040" />
+            <Text style={s.cancelSearchText}>Отменить поиск</Text>
+          </Pressable>
+        </View>
+      )}
+      <Card style={s.leadSetupCard}>
+        <View style={s.leadSetupHeader}>
+          <View style={s.leadSetupIcon}>
+            <Ionicons name="sparkles-outline" size={22} color={c.blue} />
+          </View>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={s.leadSetupTitle}>ИИ-поиск клиентов</Text>
+            <Text style={s.leadSetupSubtitle} numberOfLines={1}>Проверенные промышленные покупатели</Text>
+          </View>
+          <View style={[s.providerPill, !overview?.readiness.providerReady && s.providerPillOff]}>
+            <View style={[s.providerDot, !overview?.readiness.providerReady && { backgroundColor: c.orange }]} />
+            <Text style={[s.providerText, !overview?.readiness.providerReady && { color: c.orange }]}>OpenAI</Text>
+          </View>
+        </View>
+        <View style={s.leadCriteriaBox}>
+          <View style={s.leadCriteriaLine}>
+            <Ionicons name="cube-outline" size={17} color={c.blue} />
+            <Text style={s.leadCriteriaText} numberOfLines={2}>{overview?.config.productNames.join(" · ") || "Продукция не указана"}</Text>
+          </View>
+          <View style={s.leadCriteriaLine}>
+            <Ionicons name="location-outline" size={17} color={c.blue} />
+            <Text style={s.leadCriteriaText} numberOfLines={2}>{overview?.config.countries.join(" · ") || "Страны не указаны"}</Text>
+          </View>
+        </View>
+        <View style={s.leadQuickFacts}>
+          <View style={s.leadFactPill}>
+            <Ionicons name="scale-outline" size={14} color={c.green} />
+            <Text style={s.leadFactText}>от {overview?.config.minimumOrderKg ?? 0} кг</Text>
+          </View>
+          <View style={s.leadFactPill}>
+            <Ionicons name="business-outline" size={14} color={c.green} />
+            <Text style={s.leadFactText}>Без посредников</Text>
+          </View>
+        </View>
+        <View style={s.leadLimitRow}>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={s.label}>Количество кандидатов</Text>
+            <Text style={s.muted}>От 1 до 50 за один поиск</Text>
+          </View>
+          <TextInput
+            style={s.leadLimitInput}
+            value={candidateLimit}
+            onChangeText={(value) => setCandidateLimit(value.replace(/\D/g, "").slice(0, 2))}
+            keyboardType="number-pad"
+            placeholder="15"
+            maxLength={2}
+          />
+        </View>
+        {!!overview?.readiness.missing.length && (
+          <View style={{ marginTop: 8 }}>
+            <Text style={s.label}>Нужно указать позже</Text>
+            <View style={s.chips}>
+              {overview.readiness.missing.map((item) => <Text key={item} style={s.chip}>{item}</Text>)}
+            </View>
+          </View>
+        )}
+        <Btn title={activeRun?.status === "RUNNING" ? "Поиск выполняется…" : "Начать поиск"} onPress={start} disabled={!overview?.readiness.parametersReady || !overview?.readiness.providerReady || activeRun?.status === "RUNNING"} />
+        <View style={s.leadSafetyNote}>
+          <Ionicons name="shield-checkmark-outline" size={16} color={c.green} />
+          <Text style={s.leadSafetyText}>Только новые компании · сообщения отправляете вы</Text>
+        </View>
+        {overview?.runs[0]?.status === "FAILED" && <Text style={[s.error, { marginTop: 8 }]}>Последний поиск завершился ошибкой: {overview.runs[0].errorMessage}</Text>}
+        {activeRun?.status !== "RUNNING" && !!latestCompletedRun?.resultMessage && (
+          <View style={s.leadRunSummary}>
+            <Ionicons name={latestCompletedRun.foundCount >= latestCompletedRun.targetCount ? "checkmark-circle-outline" : "information-circle-outline"} size={16} color={c.green} />
+            <Text style={s.leadRunSummaryText}>{latestCompletedRun.resultMessage}</Text>
+          </View>
+        )}
+      </Card>
+      {error ? <Text style={s.error}>{error}</Text> : null}
+      {!!overview?.candidates.length && (
+        <View style={s.leadFunnel}>
+          <View style={s.leadFunnelItem}><Text style={s.leadFunnelValue}>{funnel.new}</Text><Text style={s.leadFunnelLabel}>Новые</Text></View>
+          <View style={s.leadFunnelDivider} />
+          <View style={s.leadFunnelItem}><Text style={s.leadFunnelValue}>{funnel.active}</Text><Text style={s.leadFunnelLabel}>В работе</Text></View>
+          <View style={s.leadFunnelDivider} />
+          <View style={s.leadFunnelItem}><Text style={[s.leadFunnelValue, { color: c.green }]}>{funnel.customers}</Text><Text style={s.leadFunnelLabel}>Клиенты</Text></View>
+        </View>
+      )}
+      <Text style={s.section}>Кандидаты · {overview?.candidates.length ?? 0}</Text>
+      {!overview?.candidates.length ? (
+        <Empty text="После настройки здесь появятся компании, рейтинг, контакты и ссылки на источники." />
+      ) : overview.candidates.map((lead) => {
+        const isNew = lead.runId === overview.latestCompletedRunId && Date.now() - new Date(lead.createdAt).getTime() < 24 * 60 * 60 * 1000;
+        return (
+        <Card key={lead.id} style={[s.leadCard, isNew && s.newLeadCard]}>
+          <View style={s.leadCardHeader}>
+            <View style={s.leadCompanyIcon}>
+              <Ionicons name="business" size={18} color={isNew ? c.green : c.blue} />
+            </View>
+            <View style={s.leadCompanyInfo}>
+              <Text style={s.leadCompanyName} numberOfLines={2}>{lead.companyName}</Text>
+              <Text style={s.leadLocation} numberOfLines={1}>{[lead.industry, lead.city, lead.country].filter(Boolean).join(" · ")}</Text>
+            </View>
+            <View style={s.leadScore}>
+              <Text style={s.leadScoreValue}>{lead.score}</Text>
+              <Text style={s.leadScoreCaption}>из 100</Text>
+            </View>
+          </View>
+          <View style={s.leadBadgeRow}>
+            {isNew && (
+              <View style={s.newLeadLabel}>
+                <Ionicons name="sparkles" size={12} color={c.green} />
+                <Text style={s.newLeadLabelText}>Новый</Text>
+              </View>
+            )}
+            <View style={s.leadStatusPill}>
+              <View style={s.leadStatusDot} />
+              <Text style={s.leadStatusText}>{leadStatus[lead.status] ?? lead.status}</Text>
+            </View>
+          </View>
+          <Text style={s.leadExplanation} numberOfLines={6}>{lead.scoreExplanation}</Text>
+          <View style={s.leadIntelligenceRow}>
+            {!!lead.companySize && <View style={s.leadIntelligencePill}><Ionicons name="business-outline" size={13} color={c.blue} /><Text style={s.leadIntelligenceText}>{lead.companySize.split(":")[0]}</Text></View>}
+            {!!lead.estimatedOrderKg && <View style={s.leadIntelligencePill}><Ionicons name="scale-outline" size={13} color={c.green} /><Text style={s.leadIntelligenceText}>≈ {lead.estimatedOrderKg.toLocaleString("ru-RU")} кг</Text></View>}
+            <View style={s.leadIntelligencePill}><Ionicons name="checkmark-circle-outline" size={13} color={c.green} /><Text style={s.leadIntelligenceText}>Проверен {new Date(lead.lastVerifiedAt).toLocaleDateString("ru-RU")}</Text></View>
+          </View>
+          {(lead.contactEmail || lead.contactPhone) && (
+            <View style={s.leadContacts}>
+              {(lead.contactName || lead.contactRole) && (
+                <View style={s.leadContactLine}>
+                  <Ionicons name="person-outline" size={15} color={c.muted} />
+                  <Text style={s.leadContactText} numberOfLines={1}>{[lead.contactName, lead.contactRole].filter(Boolean).join(" · ")}</Text>
+                </View>
+              )}
+              {!!lead.contactEmail && (
+                <View style={s.leadContactLine}>
+                  <Ionicons name="mail-outline" size={15} color={c.muted} />
+                  <Text style={s.leadContactText} numberOfLines={1}>{lead.contactEmail}</Text>
+                </View>
+              )}
+              {!!lead.contactPhone && (
+                <View style={s.leadContactLine}>
+                  <Ionicons name="call-outline" size={15} color={c.muted} />
+                  <Text style={s.leadContactText} numberOfLines={1}>{lead.contactPhone}</Text>
+                  <View style={s.leadVerifiedChannels}>
+                    {!!lead.contactTelegram && (
+                      <Pressable accessibilityLabel="Открыть подтверждённый Telegram" style={[s.leadChannelIcon, s.leadTelegramIcon]} onPress={() => void Linking.openURL(telegramUrl(lead.contactTelegram!))}>
+                        <Ionicons name="paper-plane" size={14} color={c.white} />
+                      </Pressable>
+                    )}
+                    {!!lead.contactWhatsapp && (
+                      <Pressable accessibilityLabel="Открыть подтверждённый WhatsApp" style={[s.leadChannelIcon, s.leadWhatsappIcon]} onPress={() => void Linking.openURL(whatsappUrl(lead.contactWhatsapp!))}>
+                        <Ionicons name="logo-whatsapp" size={15} color={c.white} />
+                      </Pressable>
+                    )}
+                  </View>
+                </View>
+              )}
+            </View>
+          )}
+          <View style={s.leadActions}>
+            {!!lead.contactPhone && <Pressable style={s.leadAction} onPress={() => void Linking.openURL(`tel:${lead.contactPhone!.replace(/[^+\d]/g, "")}`)}><Ionicons name="call-outline" size={17} color={c.blue} /><Text style={s.leadActionText}>Позвонить</Text></Pressable>}
+            {!lead.contactPhone && !!lead.contactTelegram && <Pressable style={s.leadAction} onPress={() => void Linking.openURL(telegramUrl(lead.contactTelegram!))}><Ionicons name="paper-plane-outline" size={17} color={c.blue} /><Text style={s.leadActionText}>Telegram</Text></Pressable>}
+            {!lead.contactPhone && !!lead.contactWhatsapp && <Pressable style={s.leadAction} onPress={() => void Linking.openURL(whatsappUrl(lead.contactWhatsapp!))}><Ionicons name="logo-whatsapp" size={17} color={c.green} /><Text style={s.leadActionText}>WhatsApp</Text></Pressable>}
+            {!!lead.contactEmail && <Pressable style={s.leadAction} onPress={() => void Linking.openURL(`mailto:${lead.contactEmail}?subject=${encodeURIComponent("Предложение от MRBA")}&body=${encodeURIComponent(lead.outreachText || "")}`)}><Ionicons name="mail-outline" size={17} color={c.blue} /><Text style={s.leadActionText}>Почта</Text></Pressable>}
+            <Pressable style={s.leadAction} onPress={() => void Linking.openURL(lead.website)}><Ionicons name="globe-outline" size={17} color={c.blue} /><Text style={s.leadActionText}>Сайт</Text></Pressable>
+            <Pressable style={s.leadAction} onPress={() => setExpandedLeadId(expandedLeadId === lead.id ? null : lead.id)}><Ionicons name={expandedLeadId === lead.id ? "chevron-up" : "chevron-down"} size={17} color={c.blue} /><Text style={s.leadActionText}>{expandedLeadId === lead.id ? "Скрыть" : "Подробнее"}</Text></Pressable>
+          </View>
+          {expandedLeadId === lead.id && <>
+          {!!lead.fitReasons.length && (
+            <View style={s.leadDetailBox}>
+              <Text style={s.leadSmallTitle}>Почему подходит</Text>
+              {lead.fitReasons.map((reason) => <Text key={reason} style={s.leadDetailLine}>✓ {reason}</Text>)}
+            </View>
+          )}
+          {!!lead.riskFlags.length && (
+            <View style={[s.leadDetailBox, s.leadRiskBox]}>
+              <Text style={s.leadSmallTitle}>Что нужно уточнить</Text>
+              {lead.riskFlags.map((risk) => <Text key={risk} style={s.leadRiskLine}>• {risk}</Text>)}
+            </View>
+          )}
+          {!!lead.outreachText && (
+            <View style={s.leadMessageBox}>
+              <View style={s.leadMessageHeader}>
+                <Text style={s.leadMessageTitle}>Текст обращения · {lead.outreachLanguage || "язык сайта"}</Text>
+                <Pressable style={s.leadShareButton} onPress={() => void Share.share({ message: lead.outreachText! })}>
+                  <Ionicons name="share-outline" size={16} color={c.blue} />
+                </Pressable>
+              </View>
+              <Text style={s.leadMessageText}>{lead.outreachText}</Text>
+            </View>
+          )}
+          {!!lead.evidence.length && (
+            <View style={s.leadSources}>
+              <Text style={s.leadSmallTitle}>Источники · {lead.evidence.length}</Text>
+              {lead.evidence.map((source, index) => (
+                <Pressable key={source.id} onPress={() => void Linking.openURL(source.url)} style={s.leadSourceLine}>
+                  <Ionicons name="link-outline" size={14} color={c.blue} />
+                  <Text style={s.leadSourceText} numberOfLines={1}>{index + 1}. {source.title || source.url}</Text>
+                </Pressable>
+              ))}
+            </View>
+          )}
+          {!!lead.statusEvents.length && (
+            <View style={s.leadHistory}>
+              <Text style={s.leadSmallTitle}>История работы</Text>
+              {lead.statusEvents.slice(0, 5).map((event) => (
+                <View key={event.id} style={s.leadHistoryLine}>
+                  <View style={s.leadHistoryDot} />
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={s.leadHistoryTitle}>{leadStatus[event.status] || event.status} · {new Date(event.createdAt).toLocaleDateString("ru-RU")}</Text>
+                    {!!event.note && <Text style={s.leadHistoryNote}>{event.note}</Text>}
+                  </View>
+                </View>
+              ))}
+            </View>
+          )}
+          {noteLeadId === lead.id ? (
+            <View style={s.leadNoteForm}>
+              <TextInput style={[s.input, s.leadNoteInput]} value={noteText} onChangeText={setNoteText} placeholder="Результат разговора или следующий шаг" multiline />
+              <TextInput style={s.input} value={nextContactDate} onChangeText={setNextContactDate} placeholder="Следующий контакт: ГГГГ-ММ-ДД" keyboardType="numbers-and-punctuation" />
+              <View style={s.leadNoteActions}>
+                <Pressable style={s.leadNoteCancel} onPress={() => { setNoteLeadId(null); setNoteText(""); setNextContactDate(""); }}><Text style={s.leadNoteCancelText}>Отмена</Text></Pressable>
+                <Pressable style={s.leadNoteSave} onPress={() => void saveLeadNote(lead.id)}><Text style={s.leadNoteSaveText}>Сохранить</Text></Pressable>
+              </View>
+            </View>
+          ) : (
+            <Pressable style={s.leadAddNote} onPress={() => setNoteLeadId(lead.id)}><Ionicons name="add-circle-outline" size={17} color={c.blue} /><Text style={s.leadActionText}>Добавить заметку</Text></Pressable>
+          )}
+          </>}
+          <Text style={s.leadSmallTitle}>Изменить статус</Text>
+          <View style={s.leadStatusOptions}>
+            {(["VERIFIED", "CONTACTED", "RESPONDED", "QUOTE_REQUESTED", "NEGOTIATION", "REJECTED"] as const).map((next) => (
+              <Pressable key={next} style={[s.leadStatusOption, lead.status === next && s.leadStatusOptionOn]} onPress={() => void changeStatus(lead.id, next)}>
+                <Text style={[s.leadStatusOptionText, lead.status === next && s.leadStatusOptionTextOn]}>{leadStatus[next]}</Text>
+              </Pressable>
+            ))}
+          </View>
+          {["RESPONDED", "QUOTE_REQUESTED", "NEGOTIATION"].includes(lead.status) && (
+            <Pressable style={s.leadPromoteButton} onPress={() => void promoteLead(lead.id)}>
+              <Ionicons name="person-add-outline" size={17} color={c.white} />
+              <Text style={s.leadPromoteText}>Добавить в клиенты</Text>
+            </Pressable>
+          )}
+        </Card>
+        );
+      })}
+    </View>
+  );
+}
+
 const s = StyleSheet.create({
+  leadSetupCard: { padding: 16 },
+  leadSetupHeader: { flexDirection: "row", alignItems: "center", gap: 10, width: "100%" },
+  leadSetupIcon: {
+    width: 40,
+    height: 40,
+    flexShrink: 0,
+    borderRadius: 13,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: c.softBlue,
+  },
+  leadSetupTitle: { fontSize: 17, fontWeight: "700", color: c.ink },
+  leadSetupSubtitle: { marginTop: 2, fontSize: 11, color: c.muted },
+  providerPill: {
+    flexShrink: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: 9,
+    paddingVertical: 7,
+    borderRadius: 16,
+    backgroundColor: "#EAF7F2",
+  },
+  providerPillOff: { backgroundColor: "#FFF4E8" },
+  providerDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: c.green },
+  providerText: { fontSize: 10, fontWeight: "700", color: c.green },
+  leadCriteriaBox: {
+    marginTop: 13,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 13,
+    backgroundColor: c.bg,
+  },
+  leadCriteriaLine: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 7 },
+  leadCriteriaText: { flex: 1, minWidth: 0, fontSize: 12, lineHeight: 17, fontWeight: "600", color: c.ink },
+  leadQuickFacts: { flexDirection: "row", flexWrap: "wrap", gap: 7, marginTop: 9 },
+  leadFactPill: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 9, paddingVertical: 6, borderRadius: 12, backgroundColor: "#EAF7F2" },
+  leadFactText: { fontSize: 11, fontWeight: "700", color: c.green },
+  leadLimitRow: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 13 },
+  leadLimitInput: {
+    width: 72,
+    minHeight: 48,
+    flexShrink: 0,
+    paddingHorizontal: 10,
+    borderWidth: 1,
+    borderColor: c.line,
+    borderRadius: 13,
+    backgroundColor: c.white,
+    textAlign: "center",
+    fontSize: 18,
+    fontWeight: "700",
+    color: c.ink,
+  },
+  leadSafetyNote: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, marginTop: 10 },
+  leadSafetyText: { flexShrink: 1, textAlign: "center", fontSize: 11, lineHeight: 16, color: c.muted },
+  leadRunSummary: { flexDirection: "row", alignItems: "flex-start", gap: 7, marginTop: 10, padding: 10, borderRadius: 12, backgroundColor: "#EAF7F2" },
+  leadRunSummaryText: { flex: 1, fontSize: 11, lineHeight: 16, color: c.green },
+  leadFunnel: { flexDirection: "row", alignItems: "center", marginBottom: 12, paddingVertical: 10, paddingHorizontal: 8, borderRadius: 14, backgroundColor: c.white, borderWidth: 1, borderColor: c.line },
+  leadFunnelItem: { flex: 1, alignItems: "center" },
+  leadFunnelValue: { fontSize: 17, lineHeight: 20, fontWeight: "800", color: c.blue },
+  leadFunnelLabel: { marginTop: 1, fontSize: 9, fontWeight: "600", color: c.muted },
+  leadFunnelDivider: { width: 1, height: 24, backgroundColor: c.line },
+  leadCard: { padding: 14, borderRadius: 18 },
+  newLeadCard: {
+    borderColor: "#9FD7C8",
+    borderWidth: 1.5,
+    backgroundColor: "#F2FBF7",
+  },
+  leadCardHeader: { flexDirection: "row", alignItems: "center", gap: 10 },
+  leadCompanyIcon: {
+    width: 36,
+    height: 36,
+    flexShrink: 0,
+    borderRadius: 11,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: c.softBlue,
+  },
+  leadCompanyInfo: { flex: 1, minWidth: 0 },
+  leadCompanyName: { fontSize: 16, lineHeight: 20, fontWeight: "700", color: c.ink },
+  leadLocation: { marginTop: 2, fontSize: 11, lineHeight: 15, color: c.muted },
+  leadScore: {
+    minWidth: 48,
+    flexShrink: 0,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: 12,
+    alignItems: "center",
+    backgroundColor: c.softBlue,
+  },
+  leadScoreValue: { fontSize: 16, lineHeight: 18, fontWeight: "800", color: c.blue },
+  leadScoreCaption: { fontSize: 8, lineHeight: 10, fontWeight: "600", color: c.muted },
+  leadBadgeRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 6, marginTop: 9 },
+  newLeadLabel: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 20,
+    backgroundColor: "#DCF3EA",
+  },
+  newLeadLabelText: { fontSize: 10, fontWeight: "700", color: c.green },
+  leadStatusPill: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 20, backgroundColor: c.bg },
+  leadStatusDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: c.blue },
+  leadStatusText: { fontSize: 10, fontWeight: "700", color: c.ink },
+  leadExplanation: { marginTop: 9, fontSize: 12, lineHeight: 17, color: c.ink },
+  leadIntelligenceRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 9 },
+  leadIntelligencePill: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 7, paddingVertical: 5, borderRadius: 9, backgroundColor: c.bg },
+  leadIntelligenceText: { fontSize: 9, fontWeight: "700", color: c.muted },
+  leadContacts: { gap: 5, marginTop: 9 },
+  leadContactLine: { flexDirection: "row", alignItems: "center", gap: 7 },
+  leadContactText: { flex: 1, minWidth: 0, fontSize: 11, color: c.muted },
+  leadVerifiedChannels: { flexShrink: 0, flexDirection: "row", alignItems: "center", gap: 5 },
+  leadChannelIcon: { width: 27, height: 27, borderRadius: 14, alignItems: "center", justifyContent: "center" },
+  leadTelegramIcon: { backgroundColor: "#229ED9" },
+  leadWhatsappIcon: { backgroundColor: "#25D366" },
+  leadActions: { flexDirection: "row", flexWrap: "wrap", gap: 7, marginTop: 11 },
+  leadAction: {
+    minHeight: 35,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 5,
+    paddingHorizontal: 10,
+    borderRadius: 11,
+    borderWidth: 1,
+    borderColor: c.line,
+    backgroundColor: c.white,
+  },
+  leadActionText: { fontSize: 11, fontWeight: "700", color: c.ink },
+  leadMessageBox: { marginTop: 11, padding: 10, borderRadius: 12, backgroundColor: c.bg },
+  leadMessageHeader: { flexDirection: "row", alignItems: "center", gap: 8 },
+  leadMessageTitle: { flex: 1, minWidth: 0, fontSize: 10, fontWeight: "700", color: c.muted },
+  leadShareButton: { width: 28, height: 28, borderRadius: 9, alignItems: "center", justifyContent: "center", backgroundColor: c.white },
+  leadMessageText: { marginTop: 5, fontSize: 11, lineHeight: 16, color: c.ink },
+  leadDetailBox: { marginTop: 11, paddingHorizontal: 10, paddingVertical: 8, borderRadius: 12, backgroundColor: "#EDF8F3" },
+  leadRiskBox: { backgroundColor: "#FFF7EB" },
+  leadDetailLine: { marginTop: 3, fontSize: 11, lineHeight: 16, color: c.green },
+  leadRiskLine: { marginTop: 3, fontSize: 11, lineHeight: 16, color: c.orange },
+  leadSources: { marginTop: 11 },
+  leadSmallTitle: { marginTop: 10, marginBottom: 5, fontSize: 10, fontWeight: "700", color: c.muted },
+  leadSourceLine: { minHeight: 29, flexDirection: "row", alignItems: "center", gap: 6 },
+  leadSourceText: { flex: 1, minWidth: 0, fontSize: 11, fontWeight: "600", color: c.blue },
+  leadHistory: { marginTop: 8 },
+  leadHistoryLine: { flexDirection: "row", alignItems: "flex-start", gap: 7, paddingVertical: 5 },
+  leadHistoryDot: { width: 7, height: 7, marginTop: 4, borderRadius: 4, backgroundColor: c.blue },
+  leadHistoryTitle: { fontSize: 10, fontWeight: "700", color: c.ink },
+  leadHistoryNote: { marginTop: 2, fontSize: 10, lineHeight: 14, color: c.muted },
+  leadNoteForm: { gap: 8, marginTop: 10 },
+  leadNoteInput: { minHeight: 76, textAlignVertical: "top" },
+  leadNoteActions: { flexDirection: "row", gap: 8 },
+  leadNoteCancel: { flex: 1, minHeight: 38, alignItems: "center", justifyContent: "center", borderRadius: 11, backgroundColor: c.bg },
+  leadNoteCancelText: { fontSize: 11, fontWeight: "700", color: c.muted },
+  leadNoteSave: { flex: 1, minHeight: 38, alignItems: "center", justifyContent: "center", borderRadius: 11, backgroundColor: c.blue },
+  leadNoteSaveText: { fontSize: 11, fontWeight: "700", color: c.white },
+  leadAddNote: { minHeight: 38, marginTop: 10, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, borderRadius: 11, backgroundColor: c.softBlue },
+  leadStatusOptions: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
+  leadStatusOption: { paddingHorizontal: 9, paddingVertical: 6, borderRadius: 10, backgroundColor: c.bg },
+  leadStatusOptionOn: { backgroundColor: c.blue },
+  leadStatusOptionText: { fontSize: 10, fontWeight: "700", color: c.muted },
+  leadStatusOptionTextOn: { color: c.white },
+  leadPromoteButton: { minHeight: 40, marginTop: 9, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, borderRadius: 11, backgroundColor: c.green },
+  leadPromoteText: { fontSize: 11, fontWeight: "700", color: c.white },
+  searchProgress: {
+    width: "100%",
+    padding: 16,
+    borderRadius: 20,
+    backgroundColor: c.white,
+    borderWidth: 1,
+    borderColor: "#DDE6F5",
+    marginBottom: 14,
+    overflow: "hidden",
+  },
+  searchProgressHeader: {
+    width: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  searchPulse: {
+    width: 38,
+    height: 38,
+    flexShrink: 0,
+    borderRadius: 19,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: c.blue,
+  },
+  searchProgressTitle: { flex: 1, minWidth: 0 },
+  searchProgressEyebrow: { fontSize: 9, fontWeight: "800", letterSpacing: 1.2, color: c.blue },
+  searchProgressHeading: { marginTop: 2, fontSize: 16, fontWeight: "700", color: c.ink },
+  searchCountPill: {
+    flexShrink: 0,
+    minWidth: 58,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 13,
+    alignItems: "center",
+    backgroundColor: c.softBlue,
+  },
+  searchCountValue: { fontSize: 17, lineHeight: 19, fontWeight: "800", color: c.blue },
+  searchCountTarget: { fontSize: 9, lineHeight: 12, fontWeight: "600", color: c.muted },
+  searchMetaRow: {
+    width: "100%",
+    flexDirection: "row",
+    gap: 8,
+  },
+  searchMetaItem: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 11,
+    backgroundColor: c.bg,
+  },
+  searchMetaText: { flexShrink: 1, fontSize: 12, fontWeight: "600", color: c.ink },
+  searchProgressHint: { marginTop: 10, fontSize: 12, lineHeight: 17, color: c.muted },
+  cancelSearchButton: {
+    minHeight: 40,
+    marginTop: 11,
+    borderRadius: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 7,
+    backgroundColor: "#FCECEC",
+  },
+  cancelSearchText: { fontSize: 12, fontWeight: "700", color: "#B84040" },
+  progressTrack: {
+    width: "100%",
+    height: 7,
+    overflow: "hidden",
+    borderRadius: 7,
+    backgroundColor: "#E8EDF5",
+    marginVertical: 14,
+  },
+  progressFill: { height: 7, maxWidth: "100%", borderRadius: 7, backgroundColor: c.blue },
   productionTabs: {
     flexDirection: "row",
     alignSelf: "center",
@@ -3026,8 +3709,8 @@ const s = StyleSheet.create({
   productionTab: {
     flex: 1,
     minWidth: 0,
-    minHeight: 46,
-    paddingVertical: 12,
+    minHeight: 40,
+    paddingVertical: 9,
     paddingHorizontal: 8,
     borderRadius: 13,
     alignItems: "center",
@@ -3037,8 +3720,8 @@ const s = StyleSheet.create({
     backgroundColor: c.blue,
   },
   productionTabText: {
-    fontSize: 14,
-    fontWeight: "600",
+    fontSize: 13,
+    fontWeight: "700",
     textAlign: "center",
   },
 
@@ -3047,9 +3730,22 @@ const s = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    padding: 22,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
     borderBottomWidth: 1,
     borderColor: c.line,
+  },
+  modalClose: { width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center", backgroundColor: c.bg },
+  modalFooter: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 9,
+    paddingHorizontal: 16,
+    paddingTop: 5,
+    paddingBottom: 10,
+    borderTopWidth: 1,
+    borderColor: c.line,
+    backgroundColor: c.white,
   },
   card: {
     backgroundColor: c.white,
@@ -3080,33 +3776,42 @@ const s = StyleSheet.create({
   value: { fontSize: 14, fontWeight: "600", color: c.ink },
   button: {
     backgroundColor: c.blue,
-    borderRadius: 13,
-    minHeight: 48,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
+    borderRadius: 12,
+    minHeight: 42,
+    paddingHorizontal: 13,
+    paddingVertical: 9,
+    flexDirection: "row",
+    gap: 7,
     alignItems: "center",
     justifyContent: "center",
-    marginTop: 10,
+    marginTop: 7,
+    borderWidth: 1,
+    borderColor: c.blue,
   },
-  secondary: { backgroundColor: c.softBlue },
-  buttonText: { color: "white", fontWeight: "600", fontSize: 14 },
+  secondary: { backgroundColor: c.white, borderColor: "#C9D9F5" },
+  dangerButton: { backgroundColor: "#FFF4F4", borderColor: "#F1CACA" },
+  buttonPressed: { opacity: 0.82, transform: [{ scale: 0.985 }] },
+  buttonDisabled: { opacity: 0.4 },
+  buttonText: { flexShrink: 1, color: "white", fontWeight: "700", fontSize: 13, lineHeight: 17, textAlign: "center" },
   input: {
     backgroundColor: c.white,
     borderWidth: 1,
     borderColor: c.line,
-    borderRadius: 13,
-    padding: 15,
+    borderRadius: 12,
+    paddingHorizontal: 13,
+    paddingVertical: 11,
     fontSize: 16,
     color: c.ink,
-    minHeight: 50,
+    minHeight: 46,
   },
   label: { fontSize: 13, fontWeight: "600", color: c.ink, marginBottom: 9 },
   options: { gap: 7 },
   option: {
     flexDirection: "row",
     gap: 10,
-    padding: 14,
-    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    borderRadius: 11,
     borderWidth: 1,
     borderColor: c.line,
     backgroundColor: c.white,

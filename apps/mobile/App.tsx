@@ -2,15 +2,17 @@ import {
   KeyboardAwareScrollView,
   KeyboardProvider,
 } from "react-native-keyboard-controller";
-import { Workspace, Reports, CatalogActions } from "./src/features";
+import { Workspace, Reports, CatalogActions, LeadAgent } from "./src/features";
 import Decimal from "decimal.js";
 import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
   AppState,
+  Image,
   Modal,
   Linking,
+  Platform,
   Pressable,
   RefreshControl,
   StyleSheet,
@@ -187,7 +189,7 @@ function FactoryApp() {
   const [boot, setBoot] = useState(true);
   const [busy, setBusy] = useState(false);
   const [tab, setTab] = useState<Tab>("Главная");
-  const [moreView, setMoreView] = useState<"menu" | "reports" | "management">(
+  const [moreView, setMoreView] = useState<"menu" | "reports" | "management" | "leads">(
     "menu",
   );
   const [data, setData] = useState<Dashboard | null>(null);
@@ -305,7 +307,10 @@ function FactoryApp() {
     return (
       <SafeAreaView style={s.boot}>
         <View style={s.logo}>
-          <Text style={s.logoText}>M</Text>
+          <Image
+            source={require("./assets/mrba-icon.png")}
+            style={s.logoImage}
+          />
         </View>
         <Text style={s.brand}>MRBA</Text>
         <ActivityIndicator color={c.blue} />
@@ -323,7 +328,10 @@ function FactoryApp() {
           >
             <View style={s.brandRow}>
               <View style={s.logo}>
-                <Text style={s.logoText}>M</Text>
+                <Image
+                  source={require("./assets/mrba-icon.png")}
+                  style={s.logoImage}
+                />
               </View>
               <View>
                 <Text style={s.brand}>MRBA</Text>
@@ -590,6 +598,7 @@ function FactoryApp() {
             {moreView === "management" && (
               <Workspace section="management" onChanged={() => void reload()} />
             )}
+            {false && moreView === "leads" && <LeadAgent />}
             {moreView === "menu" && (
               <>
                 <View style={s.profile}>
@@ -615,6 +624,13 @@ function FactoryApp() {
                     title="Контроль"
                     subtitle="Справочники и история"
                     onPress={() => setMoreView("management")}
+                  />
+                  <Action
+                    icon="sparkles-outline"
+                    title="ИИ-поиск клиентов"
+                    subtitle="В разработке"
+                    onPress={() => setMoreView("leads")}
+                    disabled
                   />
                 </View>
                 <Heading title="Справочники" />
@@ -991,7 +1007,20 @@ function Choices({
   );
 }
 const s = StyleSheet.create({
-  page: { flex: 1, backgroundColor: c.bg },
+  page: {
+    flex: 1,
+    width: "100%",
+    maxWidth: Platform.OS === "web" ? 760 : undefined,
+    alignSelf: "center",
+    backgroundColor: c.bg,
+    ...(Platform.OS === "web"
+      ? {
+          borderLeftWidth: 1,
+          borderRightWidth: 1,
+          borderColor: c.line,
+        }
+      : {}),
+  },
   boot: {
     flex: 1,
     alignItems: "center",
@@ -1016,7 +1045,9 @@ const s = StyleSheet.create({
     backgroundColor: c.navy,
     alignItems: "center",
     justifyContent: "center",
+    overflow: "hidden",
   },
+  logoImage: { width: "100%", height: "100%" },
   logoText: { color: "white", fontSize: 30, fontWeight: "800" },
   smallLogo: {
     width: 39,

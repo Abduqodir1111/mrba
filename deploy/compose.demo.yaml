@@ -35,6 +35,7 @@ services:
       DATABASE_URL: postgresql://mrba_app:${APP_DB_PASSWORD}@postgres:5432/mrba_demo
       JWT_SECRET: ${JWT_SECRET:?Required}
       RECOVERY_EPOCH: ${RECOVERY_EPOCH:?Required}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     depends_on:
       migrate: {condition: service_completed_successfully}
     ports: ["127.0.0.1:3108:3000"]
