@@ -64,7 +64,7 @@ export async function login(login: string, password: string) {
     await parse(
       await raw("/auth/login", {
         method: "POST",
-        body: JSON.stringify({ login, password, deviceId }),
+        body: JSON.stringify({ login, password, deviceId, rememberMe: true }),
       }),
     ),
   );
@@ -85,7 +85,7 @@ async function refresh() {
         await parse(
           await raw("/auth/refresh", {
             method: "POST",
-            body: JSON.stringify({ refreshToken: token }),
+            body: JSON.stringify({ refreshToken: token, rememberMe: true }),
           }),
         ),
       );

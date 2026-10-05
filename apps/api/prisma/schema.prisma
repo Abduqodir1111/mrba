@@ -53,6 +53,7 @@ model ShiftTemplate {
   @@unique([siteId, code])
 }
 model User {
+  purchaseRevisions PurchaseRevision[]
   version Int @default(1)
   id String @id @default(uuid()) @db.Uuid
   login String @unique
@@ -102,7 +103,7 @@ model RefreshSession {
   deviceId String @db.Uuid
   tokenHash String @unique
   familyId String @db.Uuid
-  expiresAt DateTime @db.Timestamptz
+  expiresAt DateTime? @db.Timestamptz
   revokedAt DateTime? @db.Timestamptz
   createdAt DateTime @default(now()) @db.Timestamptz
   @@index([userId])
@@ -142,6 +143,9 @@ model PurchaseReceipt {
   lines PurchaseLine[]
 }
 model PurchaseLine {
+  supplierName String?
+  priceKnown Boolean @default(true)
+  revisions PurchaseRevision[]
   returnedKg Decimal @default(0) @db.Decimal(20,3)
   discountPercent Decimal @default(0) @db.Decimal(5,2)
   percentDiscountKg Decimal @default(0) @db.Decimal(20,3)
@@ -250,6 +254,7 @@ model StockLot {
   @@index([itemId, createdAt])
 }
 model BusinessDocument {
+  purchaseRevision PurchaseRevision?
   id String @id @db.Uuid
   commandId String @unique @db.Uuid
   command CommandReceipt @relation(fields: [commandId], references: [commandId], onDelete: Restrict)
@@ -551,4 +556,27 @@ model CommandIntent {
   createdAt DateTime @default(now()) @db.Timestamptz
   updatedAt DateTime @updatedAt @db.Timestamptz
   @@index([actorId, status, updatedAt])
+}
+
+model PurchaseRevision {
+  id String @id @default(uuid()) @db.Uuid
+  lineId String @db.Uuid
+  line PurchaseLine @relation(fields: [lineId], references: [id], onDelete: Restrict)
+  version Int
+  commandId String @unique @db.Uuid
+  actorId String @db.Uuid
+  actor User @relation(fields: [actorId], references: [id], onDelete: Restrict)
+  document BusinessDocument @relation(fields: [commandId], references: [id], onDelete: Restrict)
+  createdAt DateTime @default(now()) @db.Timestamptz
+  supplierName String?
+  currency Currency
+  quantityKg Decimal @db.Decimal(20,3)
+  returnedKg Decimal @db.Decimal(20,3)
+  discountKg Decimal @db.Decimal(20,3)
+  discountPercent Decimal @db.Decimal(5,2)
+  percentDiscountKg Decimal @db.Decimal(20,3)
+  unitPricePerKg Decimal @db.Decimal(20,6)
+  priceKnown Boolean
+  amount Decimal @db.Decimal(35,9)
+  @@unique([lineId, version])
 }

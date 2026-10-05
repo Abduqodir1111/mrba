@@ -227,3 +227,43 @@ test("refresh rotates once; reuse revokes the family including the replacement a
     .set("Authorization", `Bearer ${next.body.accessToken}`)
     .expect(401);
 });
+
+test("remembered device survives parallel restores and is invalidated by logout", async () => {
+  const response = await request(app.getHttpServer()).post("/api/v1/auth/login").send({
+    login: process.env.OWNER_LOGIN, password: process.env.OWNER_PASSWORD,
+    deviceId: randomUUID(), rememberMe: true,
+  }).expect(201);
+  const saved = response.body;
+  const sessions = await request(app.getHttpServer()).get("/api/v1/sessions")
+    .set("Authorization", `Bearer ${saved.accessToken}`).expect(200);
+  assert.ok(sessions.body.some((s: any) => s.expiresAt === null));
+  const restores = await Promise.all(Array.from({ length: 3 }, () => request(app.getHttpServer())
+    .post("/api/v1/auth/refresh").send({ refreshToken: saved.refreshToken }).expect(201)));
+  for (const r of restores) {
+    assert.equal(r.body.refreshToken, saved.refreshToken);
+    await request(app.getHttpServer()).get("/api/v1/auth/me")
+      .set("Authorization", `Bearer ${r.body.accessToken}`).expect(200);
+  }
+  await request(app.getHttpServer()).post("/api/v1/auth/logout")
+    .send({ refreshToken: saved.refreshToken }).expect(201);
+  await request(app.getHttpServer()).post("/api/v1/auth/refresh")
+    .send({ refreshToken: saved.refreshToken }).expect(401);
+  await request(app.getHttpServer()).get("/api/v1/auth/me")
+    .set("Authorization", `Bearer ${restores[0].body.accessToken}`).expect(401);
+});
+
+test("existing valid session can be remembered without a new password; expired sessions cannot", async () => {
+  const login = () => request(app.getHttpServer()).post("/api/v1/auth/login").send({
+    login: process.env.OWNER_LOGIN, password: process.env.OWNER_PASSWORD, deviceId: randomUUID(),
+  }).expect(201);
+  const saved = (await login()).body;
+  const upgrades = await Promise.all(Array.from({length:2},()=>request(app.getHttpServer())
+    .post("/api/v1/auth/refresh").send({refreshToken:saved.refreshToken,rememberMe:true}).expect(201)));
+  assert.equal(upgrades[0].body.refreshToken,saved.refreshToken);
+  assert.equal(upgrades[1].body.refreshToken,saved.refreshToken);
+  await request(app.getHttpServer()).post("/api/v1/auth/logout").send({refreshToken:saved.refreshToken}).expect(201);
+  const expired = (await login()).body;
+  const {createHash} = await import("node:crypto");
+  await db.refreshSession.update({where:{tokenHash:createHash("sha256").update(expired.refreshToken).digest("hex")},data:{expiresAt:new Date(0)}});
+  await request(app.getHttpServer()).post("/api/v1/auth/refresh").send({refreshToken:expired.refreshToken,rememberMe:true}).expect(401);
+});

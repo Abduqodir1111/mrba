@@ -35,6 +35,7 @@ import {
   pending,
   resolvePending,
 } from "./src/api";
+import { onSessionRemoved } from "./src/secure-storage";
 import { theme as c } from "./src/theme";
 import { confirmAction } from "./src/confirm-action";
 
@@ -54,7 +55,7 @@ type Dashboard = {
   purchases: number;
   materials: number;
   suppliers: number;
-  purchaseAmounts: { currency: string; amount: string }[];
+  purchaseAmounts: { currency: string; amount: string; unpriced?: number }[];
   recent: any[];
 };
 const tabs: { label: Tab; icon: keyof typeof Ionicons.glyphMap }[] = [
@@ -207,6 +208,16 @@ function FactoryApp() {
   const [password, setPassword] = useState("");
   const [search, setSearch] = useState("");
   const [unit, setUnit] = useState<"kg" | "t">("t");
+
+  useEffect(() => onSessionRemoved(() => {
+    setAuthenticated(false);
+    setData(null);
+    setLots([]);
+    setMaterials([]);
+    setSuppliers([]);
+    setModal(null);
+    setTab("Главная");
+  }), []);
 
   async function reload() {
     setBusy(true);
@@ -530,6 +541,7 @@ function FactoryApp() {
             </View>
             <Text style={s.footnote}>
               За всё время · Каждая валюта учитывается отдельно
+              {!!data?.purchaseAmounts.some((x) => x.unpriced) && " · Есть приходы без цены"}
             </Text>
             <Heading
               title="Последние поступления"

@@ -1,3 +1,4 @@
+import { effectivePurchase, revisionInclude } from "./purchase-values";
 import { Prisma } from "@prisma/client";
 
 export type Costs = Record<string, string>;
@@ -27,8 +28,9 @@ export function addCosts(values: Valuation[]): Valuation {
   return { known: values.every((v) => v.known), amounts };
 }
 
-// Receipt amounts and transformation edges are immutable. Derive valuation from
-// that ledger, not current catalogue prices or remaining stock. Never combine currencies.
+// Original receipts, revisions and transformation edges are immutable. Derive
+// current valuation from the latest revision, including downstream production.
+// Never combine currencies or treat an unpriced receipt as a known zero cost.
 export class Costing {
   private lots = new Map<string, Valuation>();
   private documents = new Map<string, Valuation>();
@@ -41,18 +43,18 @@ export class Costing {
       where: { id: lotId },
       include: {
         item: true,
-        purchaseLot: { include: { line: { include: { receipt: true } } } },
+        purchaseLot: { include: { line: { include: { receipt: true, revisions: revisionInclude } } } },
         originDocument: true,
       },
     });
     let result: Valuation = { known: false, amounts: {} };
     if (lot?.purchaseLot) {
-      const line = lot.purchaseLot.line;
+      const line = effectivePurchase(lot.purchaseLot.line);
       if (line.quantityKg.gt(0))
         result = {
-          known: true,
+          known: line.priceKnown,
           amounts: {
-            [line.receipt.currency]: line.amount
+            [line.currency ?? line.receipt.currency]: line.amount
               .div(line.quantityKg)
               .toString(),
           },

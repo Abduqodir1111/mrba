@@ -1,3 +1,4 @@
+import { Collapsible } from "./collapsible";
 import {
   KeyboardAwareScrollView,
   KeyboardProvider,
@@ -10,6 +11,7 @@ import {
   Modal,
   Pressable,
   Share,
+  ScrollView,
   StyleSheet,
   Switch,
   Text,
@@ -66,6 +68,7 @@ const documentName = (v: string) =>
   (
     ({
       PURCHASE_RECEIPT: "Приход сырья",
+      PURCHASE_CORRECTION: "Корректировка прихода",
       SUPPLIER_RETURN: "Возврат поставщику",
       TRANSFER: "Перемещение",
       PRODUCTION_ISSUE: "Загрузка плавки",
@@ -199,6 +202,9 @@ type Field = {
   key: string;
   label: string;
   options?: Option[];
+  dropdown?: boolean;
+  extra?: boolean;
+  extraStart?: boolean;
   number?: boolean;
   secure?: boolean;
   weight?: boolean;
@@ -206,6 +212,58 @@ type Field = {
   value?: string;
   editableComment?: boolean;
 };
+function MaterialDropdown({ options, value, onChange, disabled, label }: {
+  options: Option[];
+  value?: string;
+  onChange: (value: string) => void;
+  disabled: boolean;
+  label: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const selected = options.find((option) => option.id === value);
+  const matches = options.filter((option) =>
+    option.name.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()),
+  );
+  return <View>
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`${label}: ${selected?.name ?? "Выберите сырьё"}`}
+      accessibilityState={{ expanded: open, disabled: disabled || !options.length }}
+      disabled={disabled || !options.length}
+      onPress={() => { setOpen(!open); setQuery(""); }}
+      style={[s.option, { marginBottom: 0, minHeight: 46 }, open && s.optionOn]}
+    >
+      <Text style={[s.text, { flex: 1, minWidth: 0, color: selected ? c.ink : c.muted }]} numberOfLines={2}>
+        {selected?.name ?? (options.length ? "Выберите сырьё" : "Нет сырья в справочнике")}
+      </Text>
+      <Ionicons name={open ? "chevron-up" : "chevron-down"} size={18} color={c.muted} />
+    </Pressable>
+    {open && <View style={{ marginTop: 6, borderWidth: 1, borderColor: c.line, borderRadius: 12, overflow: "hidden", backgroundColor: c.white }}>
+      <TextInput
+        accessibilityLabel={`Поиск сырья: ${label}`}
+        placeholder="Найти сырьё"
+        value={query}
+        onChangeText={setQuery}
+        style={[s.input, { margin: 8 }]}
+      />
+      <ScrollView style={{ maxHeight: 220 }} nestedScrollEnabled keyboardShouldPersistTaps="handled">
+        {matches.map((option) => <Pressable
+          key={option.id}
+          accessibilityRole="radio"
+          accessibilityState={{ checked: value === option.id }}
+          disabled={disabled}
+          onPress={() => { onChange(option.id); setOpen(false); setQuery(""); }}
+          style={[s.option, { borderWidth: 0, marginBottom: 0, borderRadius: 0, minHeight: 44 }, value === option.id && s.optionOn]}
+        >
+          <Text style={[s.text, { flex: 1, minWidth: 0 }]}>{option.name}</Text>
+          {value === option.id && <Ionicons name="checkmark" size={18} color={c.blue} />}
+        </Pressable>)}
+        {!matches.length && <Text style={[s.muted, { padding: 14 }]}>Ничего не найдено</Text>}
+      </ScrollView>
+    </View>}
+  </View>;
+}
 type Form = {
   title: string;
   subtitle?: string;
@@ -266,6 +324,7 @@ function Editor({
   failed: () => void;
 }) {
   const [handover, setHandover] = useState(false);
+  const [expandedExtras, setExpandedExtras] = useState<Record<string, boolean>>({});
   const actionLabel = handover
     ? "Передать следующей смене"
     : (actionLabels[form.title] ?? "Сохранить изменения");
@@ -285,12 +344,15 @@ function Editor({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [rowCount, setRowCount] = useState(form.repeat?.minimum ?? 1);
+  let receiptFieldNumber = 0;
   const repeated = form.repeat
     ? Array.from({ length: rowCount }, (_, i) =>
         form.repeat!.fields.map((f) => ({
           ...f,
           key: `row_${i}_${f.key}`,
-          label: `${i + 1}. ${f.label}`,
+          label: form.title === "Приход сырья"
+            ? `${!f.extra || expandedExtras[`row_${i}`] ? `${++receiptFieldNumber}. ` : ""}${f.label}`
+            : `${i + 1}. ${f.label}`,
         })),
       ).flat()
     : [];
@@ -299,6 +361,16 @@ function Editor({
       f.editableComment ||
       !["reason", "notes"].includes(f.key.split(".").at(-1) ?? ""),
   );
+  const fieldGroups = form.title === "Приход сырья" && form.repeat
+    ? [
+        { key: "main", title: "", fields: fields.filter((f) => !f.key.startsWith("row_")) },
+        ...Array.from({ length: rowCount }, (_, i) => ({
+          key: `row_${i}`,
+          title: `Материал ${i + 1}`,
+          fields: fields.filter((f) => f.key.startsWith(`row_${i}_`)),
+        })),
+      ]
+    : [{ key: "all", title: "", fields }];
   const [weightUnit, setWeightUnit] = useState<"kg" | "t">("kg");
   const enteredWeight = (value: string | undefined): Decimal | null => {
     if (!value?.trim()) return new Decimal(0);
@@ -493,13 +565,28 @@ function Editor({
                   ))}
                 </View>
               )}
-              {fields.map((f) => (
-                <View key={f.key} style={{ marginBottom: 14 }}>
+              {fieldGroups.map((section) => <View key={section.key} style={section.title ? {
+                backgroundColor: c.white, borderWidth: 1, borderColor: c.line,
+                borderRadius: 18, padding: 14, marginBottom: 18,
+              } : undefined}>
+                {!!section.title && <View style={{ flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 16, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: c.line }}>
+                  <View style={{ width: 30, height: 30, borderRadius: 10, backgroundColor: c.softBlue, alignItems: "center", justifyContent: "center" }}>
+                    <Ionicons name="layers-outline" size={17} color={c.blue} />
+                  </View>
+                  <Text accessibilityRole="header" style={{ color: c.ink, fontSize: 16, fontWeight: "700" }}>{section.title}</Text>
+                </View>}
+              {section.fields.map((f) => {
+                const group = f.key.startsWith("row_") ? f.key.split("_").slice(0, 2).join("_") : "main";
+                return <React.Fragment key={f.key}>
+                  {f.extraStart && <Btn secondary title={group === "main" ? (expandedExtras[group] ? "Скрыть валюту" : `Валюта · ${values[f.key] || "UZS"}`) : (expandedExtras[group] ? "Скрыть возврат, скидки и цену" : "Возврат, скидки и цена")} onPress={() => setExpandedExtras((old) => ({ ...old, [group]: !old[group] }))} />}
+                  <Collapsible open={!f.extra || !!expandedExtras[group]} animate={!!f.extra}><View style={{ marginBottom: 14 }}>
                   <Text style={s.label}>
                     {f.label}
                     {f.weight ? ` · ${weightUnit === "kg" ? "кг" : "т"}` : ""}
                   </Text>
-                  {f.options ? (
+                  {f.options && f.dropdown ? (
+                    <MaterialDropdown options={f.options} value={values[f.key] ?? ""} label={f.label} disabled={busy} onChange={(value) => setValues((previous) => ({ ...previous, [f.key]: value }))} />
+                  ) : f.options ? (
                     <View style={s.options}>
                       {!f.options.length ? (
                         <Text style={s.muted}>
@@ -557,7 +644,7 @@ function Editor({
                           editable={!busy}
                           secureTextEntry={f.secure}
                           autoCapitalize={f.secure ? "none" : "sentences"}
-                          value={values[f.key]}
+                          value={values[f.key] ?? ""}
                           onChangeText={(v) =>
                             setValues({ ...values, [f.key]: v })
                           }
@@ -591,8 +678,10 @@ function Editor({
                       )}
                     </View>
                   )}
-                </View>
-              ))}
+                </View></Collapsible>
+                </React.Fragment>;
+              })}
+              </View>)}
               {form.saleStock && (
                 <View style={{ marginBottom: 20, gap: 8 }}>
                   <Row
@@ -841,6 +930,37 @@ function Editor({
     </Modal>
   );
 }
+function ReceiptHistory({ lines, search, edit }: { lines: any[]; search: string; edit: (form: Form) => void }) {
+  const matching = lines.filter((line) => `${line.id} ${line.material.name} ${line.supplierName ?? ""}`.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
+  return <>
+    {!matching.length && <Empty text="Приходов пока нет или ничего не найдено." />}
+    {matching.map((line) => <Card key={line.id}>
+      <Text style={s.section}>{line.material.name}</Text>
+      <Row label={date(line.postedAt)} value={line.status === "POSTED" ? "Принято" : "Отменено"} />
+      <Row label="Кто дал сырьё" value={line.supplierName || "Не указан"} />
+      <Row label="Получено" value={`${fmt(line.grossKg)} кг`} />
+      {new Decimal(line.returnedKg).gt(0) && <Row label="Возврат по приходу" value={`${fmt(line.returnedKg)} кг`} />}
+      <Row label="Принято после возврата" value={`${fmt(line.quantityKg)} кг`} />
+      {new Decimal(line.discountKg).plus(line.percentDiscountKg).gt(0) && <Row label={`Скидки · ${fmt(line.discountPercent)}% + кг`} value={`${fmt(new Decimal(line.discountKg).plus(line.percentDiscountKg))} кг`} />}
+      <Row label="Вес после скидок · к оплате" value={`${fmt(new Decimal(line.quantityKg).minus(line.discountKg).minus(line.percentDiscountKg))} кг`} />
+      <Row label="Цена за кг" value={line.priceKnown ? `${fmt(line.unitPricePerKg)} ${line.currency}` : "Указать позже"} />
+      <Row label="К оплате" value={line.priceKnown ? `${fmt(line.amount)} ${line.currency}` : "Цена пока не указана"} />
+      {line.status === "POSTED" && <Btn secondary title="Дополнить / изменить приход" onPress={() => edit({
+        title: "Дополнить приход",
+        subtitle: `${line.material.name} · получено ${fmt(line.grossKg)} кг. Возврат — общий вес, возвращённый через этот приход. Сумма рассчитывается по цене и скидкам. Стоимость связанных плавок пересчитается.`,
+        fields: [
+          { key: "supplierName", label: "Кто дал сырьё", required: false, value: line.supplierName ?? "" },
+          { key: "returnedKg", label: "Всего возврат по приходу, кг", number: true, value: line.returnedKg },
+          { key: "discountKg", label: "Скидка, кг (вручную)", number: true, value: line.discountKg },
+          { key: "discountPercent", label: "Дополнительная скидка, %", number: true, value: line.discountPercent },
+          { ...currencies, value: line.currency },
+          { key: "unitPricePerKg", label: "Цена за кг", number: true, required: line.priceKnown, value: line.priceKnown ? line.unitPricePerKg : "" },
+        ],
+        submit: (v, send) => send(`/purchase-lines/${line.id}/amend`, { ...v, version: line.version, unitPricePerKg: v.unitPricePerKg?.trim() || undefined }),
+      })} />}
+    </Card>)}
+  </>;
+}
 const formRows = (v: Record<string, string>) =>
   Array.from({ length: Number(v._rows) }, (_, i) =>
     Object.fromEntries(
@@ -891,6 +1011,7 @@ export function Workspace({
     "IN_PROGRESS",
   );
   const [salesView, setSalesView] = useState<"sale" | "report">("sale");
+  const [inventoryView, setInventoryView] = useState<"stock" | "history">("stock");
   const [stockWarehouse, setStockWarehouse] = useState("Основной склад");
   const [stockDetails, setStockDetails] = useState<string | null>(null);
   const [massUnit, setMassUnit] = useState<"kg" | "t">("kg");
@@ -912,6 +1033,7 @@ export function Workspace({
                   "items",
                   "suppliers",
                   "inventory/discounts",
+                  "purchase-lines",
                 ]
               : [
                   "items",
@@ -938,6 +1060,7 @@ export function Workspace({
                 "customers",
                 "suppliers",
                 "stock",
+                "purchase-lines",
               ].includes(route)
                 ? await all("/" + route)
                 : await api("/" + route),
@@ -1394,7 +1517,17 @@ export function Workspace({
           ))}
         </>
       )}
-      {section === "inventory" && (
+      {section === "inventory" && <>
+        <View style={s.productionTabs}>
+          {([ ["stock", "Остатки"], ["history", "История приходов"] ] as const).map(([value, title]) => <Pressable
+            key={value} accessibilityRole="tab" accessibilityState={{ selected: inventoryView === value }}
+            onPress={() => setInventoryView(value)} style={[s.productionTab, inventoryView === value && s.productionTabActive]}>
+            <Text style={[s.productionTabText, { color: inventoryView === value ? c.white : c.muted }]}>{title}</Text>
+          </Pressable>)}
+        </View>
+        {inventoryView === "history" && <ReceiptHistory lines={rows("purchase-lines")} search={search} edit={setForm} />}
+      </>}
+      {section === "inventory" && inventoryView === "stock" && (
         <>
           <View style={s.chips}>
             {["Основной склад", "Склад для продажи"].map((name) => (
@@ -1422,26 +1555,27 @@ export function Workspace({
                 title: "Приход сырья",
                 allowDraft: true,
                 fields: [
-                  currencies,
+                  { ...currencies, value: "UZS", extra: true, extraStart: true },
                   { key: "notes", label: "Комментарий", required: false },
                 ],
                 repeat: {
                   label: "Добавить материал",
                   fields: [
-                    opt(
-                      "materialId",
-                      "Материал",
-                      options(
-                        rows("items").filter(
-                          (i) => i.kind === "MATERIAL" && i.isActive,
-                        ),
+                    {
+                      ...opt(
+                        "materialId",
+                        "Материал",
+                        options(rows("items").filter((i) => i.kind === "MATERIAL" && i.isActive)),
                       ),
-                    ),
+                      dropdown: true,
+                    },
                     weight("quantity", "Получено до возврата"),
-                    { key: "returnedKg", label: "Возврат при приёмке, кг", number: true, required: false, value: "0" },
-                    { key: "discountPercent", label: "Дополнительная скидка, %", number: true, required: false, value: "0" },
+                    { key: "supplierName", label: "Кто дал сырьё", required: false },
+                    { extra: true, extraStart: true, key: "returnedKg", label: "Возврат при приёмке, кг", number: true, required: false, value: "0" },
+                    { extra: true, key: "discountPercent", label: "Дополнительная скидка, %", number: true, required: false, value: "0" },
                     {
                       key: "discountKg",
+                      extra: true,
                       label: "Скидка, кг (вручную)",
                       number: true,
                       required: false,
@@ -1449,6 +1583,8 @@ export function Workspace({
                     },
                     {
                       key: "unitPricePerKg",
+                      extra: true,
+                      required: false,
                       label: "Цена за кг",
                       number: true,
                     },
@@ -1460,6 +1596,8 @@ export function Workspace({
                     notes: v.notes,
                     lines: formRows(v).map((l) => ({
                       ...l,
+                      supplierName: l.supplierName?.trim() || undefined,
+                      unitPricePerKg: l.unitPricePerKg?.trim() || undefined,
                       returnedKg: new Decimal(l.returnedKg || "0").toFixed(),
                       discountPercent: new Decimal(l.discountPercent || "0").toFixed(),
                       discountKg: new Decimal(l.discountKg || "0").toFixed(),

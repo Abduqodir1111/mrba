@@ -167,6 +167,11 @@ export class CorrectionsController {
           doc.status === "POSTED" && doc.type !== "REVERSAL",
           "Документ уже отменён или является сторно",
         );
+        ensure(doc.type !== "PURCHASE_CORRECTION", "Исправляйте приход через историю поступлений");
+        if (doc.type === "PURCHASE_RECEIPT") {
+          const amended = await tx.purchaseRevision.count({ where: { line: { lot: { stockLot: { originDocumentId: id } } } } });
+          ensure(!amended, "У прихода есть корректировки. Используйте историю поступлений для возврата.");
+        }
         ensure(
           !doc.shipment?.departedAt,
           "Машина уже выехала; оформите физический возврат отдельным документом",

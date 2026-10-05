@@ -1,3 +1,4 @@
+import { effectivePurchase, revisionInclude } from "./purchase-values";
 import { Query } from "@nestjs/common";
 import { page, PageQuery } from "./pagination";
 import {
@@ -17,6 +18,8 @@ import {
 } from "@nestjs/common";
 import {
   isUUID,
+  IsInt,
+  Min,
   ArrayMaxSize,
   ArrayMinSize,
   IsArray,
@@ -38,6 +41,7 @@ class NamedDto {
   @IsString() @Matches(/\S/) @MaxLength(150) name!: string;
 }
 class LineDto {
+  @IsOptional() @IsString() @MaxLength(150) supplierName?: string;
   @IsOptional() @IsString() @Matches(/^\d{1,12}$/) returnedKg?: string;
   @IsOptional() @IsString() @Matches(/^\d{1,3}(?:\.\d{1,2})?$/) discountPercent?: string;
   @IsOptional() @IsString() @Matches(/^\d{1,12}$/) discountKg?: string;
@@ -49,7 +53,16 @@ class LineDto {
   materialName?: string;
   @IsString() @Matches(/^\d{1,12}(?:\.\d{1,6})?$/) quantity!: string;
   @IsIn(["kg", "t"]) unit!: "kg" | "t";
-  @IsString() @Matches(/^\d{1,12}(?:\.\d{1,6})?$/) unitPricePerKg!: string;
+  @IsOptional() @IsString() @Matches(/^\d{1,12}(?:\.\d{1,6})?$/) unitPricePerKg?: string;
+}
+class AmendPurchaseDto {
+  @IsInt() @Min(0) version!: number;
+  @IsOptional() @IsString() @MaxLength(150) supplierName?: string;
+  @IsIn(["UZS", "USD"]) currency!: "UZS" | "USD";
+  @IsString() @Matches(/^\d{1,12}$/) returnedKg!: string;
+  @IsString() @Matches(/^\d{1,12}$/) discountKg!: string;
+  @IsString() @Matches(/^\d{1,3}(?:\.\d{1,2})?$/) discountPercent!: string;
+  @IsOptional() @IsString() @Matches(/^\d{1,12}(?:\.\d{1,6})?$/) unitPricePerKg?: string;
 }
 class PurchaseDto {
   @IsOptional() @IsUUID() supplierId?: string;
@@ -213,8 +226,8 @@ export class OperationsService {
               "Вес должен быть положительным, только целые килограммы",
             );
           }
-          const price = new Prisma.Decimal(row.unitPricePerKg);
-          if (price.lte(0))
+          const price = new Prisma.Decimal(row.unitPricePerKg ?? "0");
+          if (row.unitPricePerKg !== undefined && price.lte(0))
             throw new ConflictException("Цена должна быть положительной");
           const returned = new Prisma.Decimal(row.returnedKg ?? "0");
           if (returned.gte(kg)) throw new ConflictException("Возврат должен быть меньше полученного веса");
@@ -231,6 +244,8 @@ export class OperationsService {
           const line = await tx.purchaseLine.create({
             data: {
               receiptId: receipt.id,
+              supplierName: row.supplierName?.trim() || supplier?.name || null,
+              priceKnown: row.unitPricePerKg !== undefined,
               materialId: materialId!,
               quantityKg: kg,
               discountKg: discount,
@@ -329,8 +344,8 @@ export class OperationsController {
           WHERE loc.name='Основной склад' AND loc.kind='STORAGE' AND w."siteId"=${site.id}::uuid
           GROUP BY i.id, i.name HAVING SUM(b."onHandKg") > 0 ORDER BY i.name, i.id`;
         const totals = await tx.$queryRaw<
-          Array<{ currency: string; amount: string }>
-        >`SELECT r.currency, SUM(l.amount)::text AS amount FROM "PurchaseLine" l JOIN "PurchaseReceipt" r ON r.id=l."receiptId" JOIN "PurchaseLot" pl ON pl."lineId"=l.id JOIN "StockLot" sl ON sl.id=pl.id JOIN "BusinessDocument" d ON d.id=sl."originDocumentId" WHERE d.status='POSTED' GROUP BY r.currency`;
+          Array<{ currency: string; amount: string; unpriced: number }>
+        >`SELECT l.currency, SUM(l.amount)::text AS amount, COUNT(*) FILTER (WHERE NOT l."priceKnown")::int AS unpriced FROM "EffectivePurchaseLine" l JOIN "PurchaseReceipt" r ON r.id=l."receiptId" JOIN "PurchaseLot" pl ON pl."lineId"=l.id JOIN "StockLot" sl ON sl.id=pl.id JOIN "BusinessDocument" d ON d.id=sl."originDocumentId" WHERE d.status='POSTED' GROUP BY l.currency`;
         return {
           site,
           owner: req.actor.name,
@@ -350,7 +365,7 @@ export class OperationsController {
           suppliers: await tx.supplier.count(),
           materials: await tx.material.count(),
           purchaseAmounts: totals,
-          recent: await tx.purchaseReceipt.findMany({
+          recent: (await tx.purchaseReceipt.findMany({
             where: {
               lines: {
                 some: {
@@ -360,8 +375,8 @@ export class OperationsController {
             },
             take: 5,
             orderBy: [{ postedAt: "desc" }, { id: "desc" }],
-            include: { supplier: true, lines: { include: { material: true } } },
-          }),
+            include: { supplier: true, lines: { include: { material: true, revisions: revisionInclude } } },
+          })).map((receipt) => ({ ...receipt, lines: receipt.lines.map(effectivePurchase) })),
         };
       },
       { isolationLevel: "RepeatableRead" },
@@ -430,6 +445,76 @@ export class OperationsController {
   ) {
     return this.ops.purchase(req.actor.id, key, epoch, dto);
   }
+  @Get("purchase-lines") @Allow("inventory.read") async purchaseHistory(@Query() q: PageQuery) {
+    const result = await page(this.db.purchaseLine, {
+      orderBy: { receipt: { postedAt: "desc" } },
+      include: { material: true, receipt: { include: { supplier: true } }, revisions: revisionInclude,
+        lot: { include: { stockLot: { include: { originDocument: true } } } } },
+    }, q);
+    return { ...result, items: result.items.map((line: any) => ({
+      ...effectivePurchase(line), currency: line.revisions[0]?.currency ?? line.receipt.currency,
+      supplierName: line.revisions.length ? line.revisions[0].supplierName : (line.supplierName ?? line.receipt.supplier?.name),
+      grossKg: line.quantityKg.plus(line.returnedKg).toString(),
+      status: line.lot?.stockLot?.originDocument.status,
+      postedAt: line.receipt.postedAt,
+    })) };
+  }
+  @Get("purchase-lines/:id/revisions") @Allow("inventory.read") async purchaseRevisions(@Param("id", ParseUUIDPipe) id: string) {
+    const line = await this.db.purchaseLine.findUnique({ where: { id }, include: { receipt: true, revisions: { orderBy: { version: "desc" } } } });
+    if (!line) throw new NotFoundException();
+    return { original: line, revisions: line.revisions };
+  }
+  @Post("purchase-lines/:id/amend") @Allow("purchase.post") amendPurchase(
+    @Param("id", ParseUUIDPipe) lineId: string, @Req() req: AuthRequest,
+    @Headers("idempotency-key") key: string, @Headers("x-recovery-epoch") epoch: string,
+    @Body() dto: AmendPurchaseDto,
+  ) {
+    return this.ops.command(req.actor.id, key, epoch, "PURCHASE_CORRECTION", { lineId, ...dto }, async (tx) => {
+      const original = await tx.purchaseLine.findUnique({ where: { id: lineId }, include: {
+        receipt: true, lot: { include: { stockLot: true } },
+      } });
+      if (!original?.lot?.stockLot) throw new NotFoundException();
+      const documentId = original.lot.stockLot.originDocumentId;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`document:${documentId}`}, 0))`;
+      const doc = await tx.businessDocument.findUniqueOrThrow({ where: { id: documentId } });
+      if (doc.status !== "POSTED") throw new ConflictException("Приход отменён");
+      const revisions = await tx.purchaseRevision.findMany({ where: { lineId }, ...revisionInclude });
+      const current = effectivePurchase({ ...original, revisions });
+      if (dto.version !== current.version) throw new ConflictException("Приход уже изменён. Обновите историю и откройте его снова.");
+      const returned = new Prisma.Decimal(dto.returnedKg);
+      // This is the total returned through this receipt, not another incremental return.
+      if (returned.lt(current.returnedKg)) throw new ConflictException("Уже оформленный возврат нельзя уменьшить. Для повторного получения оформите новый приход.");
+      const quantity = original.quantityKg.plus(original.returnedKg).minus(returned);
+      const discount = new Prisma.Decimal(dto.discountKg);
+      const percent = new Prisma.Decimal(dto.discountPercent);
+      if (quantity.lte(0) || discount.gt(quantity) || percent.gt(100)) throw new ConflictException("Проверьте вес возврата и скидки");
+      const price = new Prisma.Decimal(dto.unitPricePerKg ?? "0");
+      if (dto.unitPricePerKg !== undefined && price.lte(0)) throw new ConflictException("Цена должна быть положительной");
+      if (current.priceKnown && dto.unitPricePerKg === undefined) throw new ConflictException("Уже указанную цену нельзя удалить");
+      const extraReturn = returned.minus(current.returnedKg);
+      const lotId = original.lot.id;
+      const origin = await tx.stockMovement.findFirstOrThrow({ where: { lotId, documentId }, orderBy: { postedAt: "asc" } });
+      if (extraReturn.gt(0)) {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`${lotId}:${origin.locationId}`}, 0))`;
+        const balance = await tx.inventoryBalance.findUniqueOrThrow({ where: { lotId_locationId: { lotId, locationId: origin.locationId } } });
+        if (balance.onHandKg.minus(balance.reservedKg).lt(extraReturn)) throw new ConflictException("Недостаточно свободного сырья на основном складе для возврата. Сначала верните его из плавки или другого склада.");
+      }
+      await tx.businessDocument.create({ data: { id: key, commandId: key, type: "PURCHASE_CORRECTION", reason: `Корректировка прихода ${lineId}` } });
+      if (extraReturn.gt(0)) {
+        await tx.inventoryBalance.update({ where: { lotId_locationId: { lotId, locationId: origin.locationId } }, data: { onHandKg: { decrement: extraReturn }, version: { increment: 1 } } });
+        await tx.stockMovement.create({ data: { documentId: key, commandId: key, lotId, locationId: origin.locationId, signedQuantityKg: extraReturn.negated(), type: "SUPPLIER_RETURN" } });
+      }
+      const percentDiscountKg = quantity.minus(discount).times(percent).div(100).toDecimalPlaces(3);
+      const amendment = await tx.purchaseRevision.create({ data: {
+        lineId, version: current.version + 1, commandId: key, actorId: req.actor.id,
+        supplierName: dto.supplierName?.trim() || null, currency: dto.currency,
+        quantityKg: quantity, returnedKg: returned, discountKg: discount, discountPercent: percent,
+        percentDiscountKg, unitPricePerKg: price, priceKnown: dto.unitPricePerKg !== undefined,
+        amount: quantity.minus(discount).minus(percentDiscountKg).times(price),
+      } });
+      return { id: key, lineId, version: amendment.version, returnedKg: returned.toString(), amount: amendment.amount.toString() };
+    });
+  }
   @Get("inventory/discounts") @Allow("inventory.read") async discounts() {
     const items = await this.db.$queryRaw<
       Array<{
@@ -440,7 +525,7 @@ export class OperationsController {
       }>
     >`
       SELECT l."materialId", m.name, SUM(l."quantityKg")::text AS "receivedKg", SUM(l."discountKg" + l."percentDiscountKg")::text AS "discountKg"
-      FROM "PurchaseLine" l JOIN "Material" m ON m.id=l."materialId"
+      FROM "EffectivePurchaseLine" l JOIN "Material" m ON m.id=l."materialId"
       JOIN "PurchaseLot" p ON p."lineId"=l.id JOIN "StockLot" s ON s."purchaseLotId"=p.id
       JOIN "BusinessDocument" d ON d.id=s."originDocumentId"
       WHERE d.status='POSTED' GROUP BY l."materialId", m.name ORDER BY m.name`;
@@ -459,6 +544,7 @@ export class OperationsController {
           line: {
             include: {
               material: true,
+              revisions: revisionInclude,
               receipt: { include: { supplier: true } },
             },
           },
@@ -470,6 +556,7 @@ export class OperationsController {
       ...result,
       items: result.items.map((l: any) => ({
         ...l,
+        line: effectivePurchase(l.line),
         balances: l.stockLot?.balances ?? [],
       })),
     };

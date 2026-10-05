@@ -7,7 +7,7 @@
 - iPhone-приложение React Native/Expo SDK 57, NestJS 12, Prisma 7, PostgreSQL 18. Современный интерфейс: главная, склад, производство, продажи, управление; отчёты доступны из управления.
 - Завод Каттакурган, Самаркандская область; Asia/Tashkent. Две смены 08:00–20:00 / 20:00–08:00. Ночная смена относится к дате начала. Начальные латунный и медный котлы; справочник оборудования расширяется.
 - Целые kg; ввод и отображение kg/t. Положительные количества и точное преобразование 1 t = 1000 kg. UZS/USD учитываются отдельно; цены задаются за kg. Обменный курс, налоги, себестоимость и финансовое округление не выдумываются.
-- OWNER, Argon2id, access/refresh, защищённое хранение refresh в Keychain, ротация с отзывом семейства при reuse. Управление владельцами, отключение пользователя, защита последнего активного владельца, отзыв подключений.
+- OWNER, Argon2id, access/refresh, хранение refresh в Keychain на устройстве и localStorage в вебе; пароль не сохраняется. При rememberMe сессия действует до выхода/отзыва, ключ устройства стабилен между вкладками, access истекает через 10 минут. Старые клиенты без rememberMe сохраняют 7-дневную сессию с ротацией и отзывом семейства при reuse. Управление владельцами, отключение пользователя, защита последнего активного владельца, отзыв подключений.
 - Справочники материалов, поставщиков, продукции, отходов, оборудования, клиентов; редактирование с version и отключение без удаления истории.
 - Приход нескольких позиций; отдельные закупочные партии с исходной ценой. Журнал движений и транзакционные остатки; возврат поставщику, перемещение, выдача в плавку, возврат из плавки, резерв/снятие резерва, инвентаризация с причиной и предыдущим остатком.
 - Плавки/WIP: загрузка нескольких исходных партий, отдельное потребление при завершении, несколько выходов продукции/отходов, обязательные отходы. Недостающий вес при пустом котле учитывается как безвозвратные потери. При явно включённой пересменке — 1% от массы этапа с округлением HALF_UP до целого кг и перенос остатка следующей смене в том же котле. См. [правила пересменки](shift-handover.md). Завершение, отмена пустой плавки, закрытие/повторное открытие смены.
@@ -52,3 +52,21 @@ API и PostgreSQL healthy на VPS, API доступен только через
 
 ### Локальный сброс по просьбе владельца — 22.09.2026
 База mrba в mrba-dev-postgres-1 очищена для тестирования с нуля. Сохранены владелец, права и сессии; seed восстановил завод, два склада, два котла и шаблоны смен. Проверены нулевые остатки, поступления, плавки, продажи и номенклатура. Копия до сброса: artifacts/backups/mrba-before-reset-20260922.dump. RECOVERY_EPOCH локального API изменён для защиты от старых команд, API перезапущен. VPS не затронут.
+
+### 2026-10-05 — сохранённый вход (локально)
+
+Миграция `20261005200000_persistent_sessions` разрешает `expiresAt = NULL` для сохранённых сессий. Login/refresh принимают необязательный rememberMe. Только действующую сессию можно перевести в сохранённую; просроченную или отозванную нельзя. Выход и отзыв подключения блокируют также уже выданный access token. Веб переносит прежний ключ из sessionStorage в localStorage; незавершённые команды остаются в sessionStorage. Выход синхронизируется между вкладками. Очистка данных браузера требует повторного входа; адреса LAN и публичного сайта имеют отдельное хранилище. На рабочем сервере это изменение пока не применено.
+
+### 2026-10-05 — deferred receipt details (local only)
+
+Multi-position receipt requires only material and quantity. Supplier name is a visible optional per-line field; returns, kg/percentage discounts and price are collapsed. Missing price is explicitly unknown, not a free purchase. Currency defaults to UZS. Warehouse → receipt history lists all lines newest first, with immutable line UUID, supplier, original gross weight, effective terms, amount and a revision timeline.
+
+`POST /purchase-lines/:id/amend` appends a complete `PurchaseRevision` snapshot and audited `PURCHASE_CORRECTION` document with optimistic version check, command idempotency and original-document lock. An increase in cumulative returned kg posts only the difference against free stock in the receiving warehouse using the same balance lock as factory operations. Already recorded returns cannot be decreased; full returns are not supported by this editor (net receipt must remain positive). Existing standalone supplier-return operations remain separate from the cumulative return field in this editor. Original receipt/line and revision rows remain immutable. Reversal of an amended receipt or its correction is blocked, preventing detached stock/valuation history.
+
+Effective revisions feed stock discounts, purchase totals, recent receipts and recursive production costing. Late price changes recalculate the displayed cost of related production, including already completed batches. No frozen accounting-period valuation is implemented. Unknown prices are marked in stock/history and flagged in dashboard totals.
+
+Migration `20261005210000_receipt_amendments` applied only to local clone/QA/test databases. Production unchanged. Integration suite: 48 passing (including late price, downstream production, idempotency, concurrent edits, return after transfer/reservation, immutable original and reversal protection). Browser QA at 390×844: two unpriced lines accepted; one amended to 950 kg net / 82,800 UZS; both original and revision visible. QA operations were in `mrba_ui_test`, not the production clone.
+
+### 2026-10-06 — release preparation
+
+Receipt cards hide technical IDs and the revision timeline; the server retains the immutable audit trail. Each material has a separate card; visible fields are numbered consecutively. Extra fields expand smoothly (reduced-motion preference respected). Receipt history displays payable kg after both discounts separately from physical stock. Release validation: typecheck, 48 integration and 17 unit tests passed. Production and demo require the persistent-session and receipt-amendment migrations before deploying this web bundle.

@@ -1,0 +1,1 @@
+ALTER TABLE "RefreshSession" ALTER COLUMN "expiresAt" DROP NOT NULL;

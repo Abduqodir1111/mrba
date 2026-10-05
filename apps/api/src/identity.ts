@@ -17,7 +17,7 @@ import {
 import { Throttle } from "@nestjs/throttler";
 import { Reflector } from "@nestjs/core";
 import { JwtService } from "@nestjs/jwt";
-import { IsString, IsUUID, MaxLength, MinLength } from "class-validator";
+import { IsBoolean, IsOptional, IsString, IsUUID, MaxLength, MinLength } from "class-validator";
 import { randomBytes, randomUUID, createHash } from "node:crypto";
 import * as argon2 from "argon2";
 import { Database } from "./db";
@@ -36,11 +36,13 @@ export const Allow = (permission: string) =>
 export type Actor = { id: string; name: string; permissions: string[] };
 export type AuthRequest = Request & { actor: Actor };
 class LoginDto {
+  @IsOptional() @IsBoolean() rememberMe?: boolean;
   @IsString() @MinLength(1) @MaxLength(100) login!: string;
   @IsString() @MinLength(1) @MaxLength(200) password!: string;
   @IsUUID() deviceId!: string;
 }
 class RefreshDto {
+  @IsOptional() @IsBoolean() rememberMe?: boolean;
   @IsString() @MinLength(40) @MaxLength(200) refreshToken!: string;
 }
 const hash = (value: string) =>
@@ -74,7 +76,7 @@ export class AuthService {
         deviceId: dto.deviceId,
         tokenHash: hash(token),
         familyId: randomUUID(),
-        expiresAt: new Date(Date.now() + 7 * 86400000),
+        expiresAt: dto.rememberMe ? null : new Date(Date.now() + 7 * 86400000),
       },
     });
     return {
@@ -82,7 +84,7 @@ export class AuthService {
       refreshToken: token,
     };
   }
-  async refresh(token: string) {
+  async refresh(token: string, rememberMe = false) {
     const result = await this.db.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${hash(token)}, 0))`;
       const old = await tx.refreshSession.findUnique({
@@ -97,7 +99,14 @@ export class AuthService {
         });
         return null;
       }
-      if (!old.user.isActive || old.expiresAt <= new Date()) return null;
+      if (!old.user.isActive || (old.expiresAt && old.expiresAt <= new Date())) return null;
+      // Persistent device credentials remain stable across browser tabs. Access
+      // tokens still expire in 10 minutes; logout/revocation invalidates both.
+      if (old.expiresAt === null || rememberMe) {
+        if (old.expiresAt !== null)
+          await tx.refreshSession.update({ where: { id: old.id }, data: { expiresAt: null } });
+        return { userId: old.userId, sessionId: old.id, token };
+      }
       await tx.refreshSession.update({
         where: { id: old.id },
         data: { revokedAt: new Date() },
@@ -170,7 +179,7 @@ export class AccessGuard implements CanActivate {
       !session ||
       session.userId !== claims.sub ||
       session.revokedAt ||
-      session.expiresAt <= new Date() ||
+      (session.expiresAt !== null && session.expiresAt <= new Date()) ||
       !session.user.isActive
     )
       throw new UnauthorizedException();
@@ -216,7 +225,7 @@ export class AuthController {
     return this.auth.login(dto);
   }
   @Post("refresh") refresh(@Body() dto: RefreshDto) {
-    return this.auth.refresh(dto.refreshToken);
+    return this.auth.refresh(dto.refreshToken, dto.rememberMe);
   }
   @Post("logout") logout(@Body() dto: RefreshDto) {
     return this.auth.logout(dto.refreshToken);

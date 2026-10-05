@@ -79,7 +79,7 @@ export class AdminController {
       where: {
         userId: req.actor.id,
         revokedAt: null,
-        expiresAt: { gt: new Date() },
+        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
       },
       select: { id: true, deviceId: true, createdAt: true, expiresAt: true },
       orderBy: { createdAt: "desc" },

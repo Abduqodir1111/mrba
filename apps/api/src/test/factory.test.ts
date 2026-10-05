@@ -1433,3 +1433,101 @@ test("percentage discount follows acceptance return and manual kg discount witho
     assert.equal(row.amount.toString(), new Prisma.Decimal(9200).minus(extra).times(100).toString());
   }
 });
+
+test("multi-material receipt is atomic, retains each discount, and retries do not duplicate stock", async () => {
+  const id = randomUUID();
+  const body = { currency: "UZS", lines: [
+    { materialName: `Multi A ${id}`, quantity: "2", unit: "t", returnedKg: "100", discountKg: "50", discountPercent: "10", unitPricePerKg: "100" },
+    { materialName: `Multi B ${id}`, quantity: "500", unit: "kg", discountPercent: "2", unitPricePerKg: "200" },
+  ] };
+  const invalidId = randomUUID();
+  await rawPost("/purchase-receipts", { ...body, lines: [body.lines[0], { ...body.lines[1], discountKg: "501" }] }, invalidId).expect(409);
+  assert.equal(await db.purchaseReceipt.count({ where: { id: invalidId } }), 0);
+  assert.equal(await db.stockMovement.count({ where: { commandId: invalidId } }), 0);
+  assert.equal(await db.material.count({ where: { name: { in: body.lines.map(l => l.materialName) } } }), 0);
+  const result = (await post("/purchase-receipts", body, id)).body;
+  assert.deepEqual((await post("/purchase-receipts", body, id)).body, result);
+  const lines = await db.purchaseLine.findMany({ where: { receiptId: result.id }, include: { material: true, lot: { include: { stockLot: { include: { balances: true } } } } } });
+  assert.equal(lines.length, 2);
+  for (const line of lines) {
+    const first = line.material.name === body.lines[0].materialName;
+    assert.equal(line.quantityKg.toString(), first ? "1900" : "500");
+    assert.equal(line.percentDiscountKg.toString(), first ? "185" : "10");
+    assert.equal(line.amount.toString(), first ? "166500" : "98000");
+    assert.equal(line.lot!.stockLot!.balances[0].onHandKg.toString(), first ? "1900" : "500");
+  }
+  assert.equal(await db.stockMovement.count({ where: { commandId: id } }), 2);
+});
+
+test("unpriced multi-receipts can be completed later without rewriting history or duplicating returns", async () => {
+  const receipt = (await post("/purchase-receipts", { currency: "UZS", lines: [
+    { materialId: material, quantity: "10000", unit: "kg", supplierName: "Supplier Later A" },
+    { materialId: material, quantity: "200", unit: "kg", supplierName: "Supplier Later B" },
+  ] })).body;
+  const lines = await db.purchaseLine.findMany({ where: { receiptId: receipt.id }, include: { lot: true }, orderBy: { quantityKg: "desc" } });
+  assert.equal(lines.length, 2);
+  assert.equal(lines[0].priceKnown, false);
+  const line = lines[0], lotId = line.lot!.id;
+  const { Costing } = await import("../costing");
+  assert.equal((await new Costing(db).unit(lotId)).known, false);
+  const edit = { version: 0, supplierName: "Supplier Corrected", returnedKg: "500", discountKg: "300", discountPercent: "10", unitPricePerKg: "100", currency: "UZS" };
+  const key = randomUUID();
+  const result = (await post(`/purchase-lines/${line.id}/amend`, edit, key)).body;
+  assert.equal(result.amount, "828000");
+  assert.equal((await post(`/purchase-lines/${line.id}/amend`, edit, key)).body.id, result.id);
+  const balance = () => db.inventoryBalance.findUniqueOrThrow({ where: { lotId_locationId: { lotId, locationId: location } } });
+  assert.equal((await balance()).onHandKg.toString(), "9500");
+  assert.equal(await db.stockMovement.count({ where: { commandId: key } }), 1);
+  assert.equal((await new Costing(db).unit(lotId)).amounts.UZS, new Prisma.Decimal(828000).div(9500).toString());
+  await post(`/purchase-lines/${line.id}/amend`, { ...edit, unitPricePerKg: "200" }, randomUUID(), 409);
+  await post(`/purchase-lines/${line.id}/amend`, { ...edit, version: 1, returnedKg: "499" }, randomUUID(), 409);
+  await post(`/purchase-lines/${line.id}/amend`, { ...edit, version: 1, discountPercent: "101" }, randomUUID(), 409);
+  const simultaneous = await Promise.all([100,200].map((price) => rawPost(`/purchase-lines/${line.id}/amend`, { ...edit, version: 1, unitPricePerKg: String(price) })));
+  assert.deepEqual(simultaneous.map((r) => r.status).sort(), [201,409]);
+  assert.equal((await balance()).onHandKg.toString(), "9500");
+  const original = await db.purchaseLine.findUniqueOrThrow({ where: { id: line.id } });
+  assert.equal(original.quantityKg.toString(), "10000");
+  assert.equal(original.priceKnown, false);
+  assert.equal(await db.purchaseRevision.count({ where: { lineId: line.id } }), 2);
+  const history = (await request(app.getHttpServer()).get("/api/v1/purchase-lines?limit=100").set("Authorization", `Bearer ${token}`).expect(200)).body.items.find((r: any) => r.id === line.id);
+  assert.equal(history.supplierName, "Supplier Corrected");
+  assert.equal(history.grossKg, "10000");
+  assert.equal(history.quantityKg, "9500");
+  assert.equal(history.version, 2);
+  const origin = await db.stockLot.findUniqueOrThrow({ where: { id: lotId } });
+  await post(`/documents/${origin.originDocumentId}/reverse`, { reason: "Amended receipt" }, randomUUID(), 409);
+  await post(`/documents/${key}/reverse`, { reason: "Correction" }, randomUUID(), 409);
+});
+
+test("late supplier return rejects reserved or consumed stock atomically", async () => {
+  const receipt = (await post("/purchase-receipts", { currency: "USD", lines: [{ materialId: material, quantity: "100", unit: "kg" }] })).body;
+  const line = await db.purchaseLine.findFirstOrThrow({ where: { receiptId: receipt.id }, include: { lot: true } });
+  // An existing physical transfer leaves only 20 kg on the receiving warehouse.
+  await post("/inventory/transfer", { lotId: line.lot!.id, locationId: location, destinationId: salesLocation, quantityKg: "80", reason: "Local late-return test" });
+  const edit = { version: 0, currency: "USD", returnedKg: "30", discountKg: "0", discountPercent: "0", unitPricePerKg: "1" };
+  await post(`/purchase-lines/${line.id}/amend`, edit, randomUUID(), 409);
+  assert.equal(await db.purchaseRevision.count({ where: { lineId: line.id } }), 0);
+  await post(`/purchase-lines/${line.id}/amend`, { ...edit, returnedKg: "20" });
+  const balances = await db.inventoryBalance.findMany({ where: { lotId: line.lot!.id } });
+  assert.equal(balances.reduce((sum, b) => sum.plus(b.onHandKg), new Prisma.Decimal(0)).toString(), "80");
+});
+
+test("late price flows into completed production and returns cannot use reserved stock", async () => {
+  const { Costing } = await import("../costing");
+  const mat = (await post("/materials", { name: `Late cost ${randomUUID()}` })).body.id;
+  const eq = (await post("/equipment", { name: `Late cost kettle ${randomUUID()}`, direction: "COPPER" })).body.id;
+  const receipt = (await post("/purchase-receipts", { currency: "UZS", lines: [{ materialId: mat, quantity: "100", unit: "kg" }] })).body;
+  const line = await db.purchaseLine.findFirstOrThrow({ where: { receiptId: receipt.id }, include: { lot: true } });
+  const b = (await post("/batches", { equipmentId: eq })).body;
+  await post(`/batches/${b.id}/load`, { lines: [{ itemId: mat, quantityKg: "80" }] });
+  const key = randomUUID();
+  await post(`/batches/${b.id}/complete`, { version: 1, locationId: location, lossKg: "0", outputs: [{ itemId: product, quantityKg: "70" }, { itemId: waste, quantityKg: "10" }] }, key);
+  const finished = await db.stockLot.findFirstOrThrow({ where: { originDocumentId: key, itemId: product } });
+  assert.equal((await new Costing(db).unit(finished.id)).known, false);
+  const amend = { version: 0, currency: "UZS", returnedKg: "0", discountKg: "0", discountPercent: "0", unitPricePerKg: "10" };
+  await post(`/purchase-lines/${line.id}/amend`, amend);
+  assert.equal((await new Costing(db).unit(finished.id)).amounts.UZS, new Prisma.Decimal(800).div(70).toString());
+  await post("/inventory/reserve", { lotId: line.lot!.id, locationId: location, quantityKg: "15", reason: "Reserved" });
+  await post(`/purchase-lines/${line.id}/amend`, { ...amend, version: 1, returnedKg: "10" }, randomUUID(), 409);
+  assert.equal(await db.purchaseRevision.count({ where: { lineId: line.id } }), 1);
+});

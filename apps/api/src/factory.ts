@@ -1,3 +1,4 @@
+import { effectivePurchase, revisionInclude } from "./purchase-values";
 import { Costing, scaleCost } from "./costing";
 import { Query } from "@nestjs/common";
 import { page, PageQuery, StockPageQuery } from "./pagination";
@@ -602,7 +603,7 @@ export class FactoryController {
       },
       include: {
         lot: {
-          include: { item: true, purchaseLot: { include: { line: true } } },
+          include: { item: true, purchaseLot: { include: { line: { include: { revisions: revisionInclude } } } } },
         },
         location: true,
       },
@@ -614,9 +615,10 @@ export class FactoryController {
     const valued = [];
     for (const row of items.slice(0, q.limit)) {
       const unitCost = await costing.unit(row.lotId);
-      const line = row.lot.purchaseLot?.line;
+      const line = row.lot.purchaseLot ? effectivePurchase(row.lot.purchaseLot.line) : null;
       valued.push({
         ...row,
+        lot: row.lot.purchaseLot ? { ...row.lot, purchaseLot: { ...row.lot.purchaseLot, line } } : row.lot,
         unitCost,
         stockValue: scaleCost(unitCost, row.onHandKg),
         discountOnHandKg: line
