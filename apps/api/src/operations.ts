@@ -38,6 +38,9 @@ class NamedDto {
   @IsString() @Matches(/\S/) @MaxLength(150) name!: string;
 }
 class LineDto {
+  @IsOptional() @IsString() @Matches(/^\d{1,12}$/) returnedKg?: string;
+  @IsOptional() @IsString() @Matches(/^\d{1,3}(?:\.\d{1,2})?$/) discountPercent?: string;
+  @IsOptional() @IsString() @Matches(/^\d{1,12}$/) discountKg?: string;
   @IsOptional() @IsUUID() materialId?: string;
   @IsOptional()
   @IsString()
@@ -213,12 +216,27 @@ export class OperationsService {
           const price = new Prisma.Decimal(row.unitPricePerKg);
           if (price.lte(0))
             throw new ConflictException("Цена должна быть положительной");
-          const amount = new Prisma.Decimal(kg).times(price); // exact, no unapproved monetary rounding
+          const returned = new Prisma.Decimal(row.returnedKg ?? "0");
+          if (returned.gte(kg)) throw new ConflictException("Возврат должен быть меньше полученного веса");
+          kg = new Prisma.Decimal(kg).minus(returned).toFixed();
+          const percent = new Prisma.Decimal(row.discountPercent ?? "0");
+          if (percent.gt(100)) throw new ConflictException("Скидка должна быть от 0 до 100%");
+          const discount = new Prisma.Decimal(row.discountKg ?? "0");
+          if (discount.gt(kg))
+            throw new ConflictException(
+              "Скидка не может превышать фактически полученный вес",
+            );
+          const percentDiscountKg = new Prisma.Decimal(kg).minus(discount).times(percent).div(100).toDecimalPlaces(3);
+          const amount = new Prisma.Decimal(kg).minus(discount).minus(percentDiscountKg).times(price);
           const line = await tx.purchaseLine.create({
             data: {
               receiptId: receipt.id,
               materialId: materialId!,
               quantityKg: kg,
+              discountKg: discount,
+              returnedKg: returned,
+              discountPercent: percent,
+              percentDiscountKg,
               unitPricePerKg: price,
               amount,
             },
@@ -411,6 +429,22 @@ export class OperationsController {
     @Body() dto: PurchaseDto,
   ) {
     return this.ops.purchase(req.actor.id, key, epoch, dto);
+  }
+  @Get("inventory/discounts") @Allow("inventory.read") async discounts() {
+    const items = await this.db.$queryRaw<
+      Array<{
+        materialId: string;
+        name: string;
+        receivedKg: string;
+        discountKg: string;
+      }>
+    >`
+      SELECT l."materialId", m.name, SUM(l."quantityKg")::text AS "receivedKg", SUM(l."discountKg" + l."percentDiscountKg")::text AS "discountKg"
+      FROM "PurchaseLine" l JOIN "Material" m ON m.id=l."materialId"
+      JOIN "PurchaseLot" p ON p."lineId"=l.id JOIN "StockLot" s ON s."purchaseLotId"=p.id
+      JOIN "BusinessDocument" d ON d.id=s."originDocumentId"
+      WHERE d.status='POSTED' GROUP BY l."materialId", m.name ORDER BY m.name`;
+    return { items, nextCursor: null };
   }
   @Get("inventory/lots") @Allow("inventory.read") async inventory(
     @Query() q: PageQuery,

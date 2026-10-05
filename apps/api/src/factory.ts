@@ -1,3 +1,4 @@
+import { Costing, scaleCost } from "./costing";
 import { Query } from "@nestjs/common";
 import { page, PageQuery, StockPageQuery } from "./pagination";
 import {
@@ -159,6 +160,7 @@ class OutputDto {
   @IsString() @Matches(/^\d{1,12}$/) quantityKg!: string;
 }
 class CompleteDto extends VersionDto {
+  @IsOptional() @IsString() @Matches(/^\d{1,12}$/) lossKg?: string;
   @IsOptional() @IsBoolean() handover?: boolean;
   @IsOptional() @IsUUID() carryoverItemId?: string;
   @IsUUID() locationId!: string;
@@ -377,7 +379,9 @@ export class FactoryService {
           `Продукция и отходы (${outputTotal} кг) превышают загруженный вес (${total} кг)`,
         );
         const loss = dto.handover
-          ? total.div(100).toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP)
+          ? dto.lossKg !== undefined
+            ? decimal(dto.lossKg)
+            : total.div(100).toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP)
           : total.minus(outputTotal);
         const carryover = dto.handover
           ? total.minus(outputTotal).minus(loss)
@@ -390,7 +394,7 @@ export class FactoryService {
         if (dto.handover) {
           ensure(
             carryover.gt(0),
-            "После вычета продукции, отходов и 1% потерь должен остаться металл в котле. Если котёл пуст — выключите пересменку",
+            "После вычета продукции, отходов и указанных потерь должен остаться металл в котле. Если котёл пуст — выключите пересменку",
           );
           const carryItem =
             dto.carryoverItemId &&
@@ -596,13 +600,32 @@ export class FactoryController {
             }
           : {}),
       },
-      include: { lot: { include: { item: true } }, location: true },
+      include: {
+        lot: {
+          include: { item: true, purchaseLot: { include: { line: true } } },
+        },
+        location: true,
+      },
       orderBy: [{ lotId: "desc" }, { locationId: "desc" }],
       take: q.limit + 1,
     });
     const last = items[q.limit - 1];
+    const costing = new Costing(this.db);
+    const valued = [];
+    for (const row of items.slice(0, q.limit)) {
+      const unitCost = await costing.unit(row.lotId);
+      const line = row.lot.purchaseLot?.line;
+      valued.push({
+        ...row,
+        unitCost,
+        stockValue: scaleCost(unitCost, row.onHandKg),
+        discountOnHandKg: line
+          ? row.onHandKg.times(line.discountKg.plus(line.percentDiscountKg)).div(line.quantityKg).toString()
+          : "0",
+      });
+    }
     return {
-      items: items.slice(0, q.limit),
+      items: valued,
       nextCursor:
         items.length > q.limit ? `${last.lotId}:${last.locationId}` : null,
     };
@@ -610,8 +633,8 @@ export class FactoryController {
   @Get("equipment") equipment(@Query() q: PageQuery) {
     return page(this.db.equipment, { orderBy: { name: "asc" } }, q, "name");
   }
-  @Get("batches") batches(@Query() q: PageQuery) {
-    return page(
+  @Get("batches") async batches(@Query() q: PageQuery) {
+    const result = await page(
       this.db.productionBatch,
       {
         include: {
@@ -623,12 +646,58 @@ export class FactoryController {
           nextBatch: { select: { id: true, number: true } },
           inputs: { include: { lot: { include: { item: true } } } },
           outputs: { include: { lot: { include: { item: true } } } },
+          wipLocation: { include: { balances: true } },
         },
         orderBy: { startedAt: "desc" },
       },
       q,
       "number",
     );
+    const costing = new Costing(this.db);
+    const valued = [];
+    for (const batch of result.items) {
+      const inputs =
+        batch.status === "IN_PROGRESS"
+          ? batch.wipLocation.balances
+              .filter((r: { onHandKg: Prisma.Decimal }) => r.onHandKg.gt(0))
+              .map((r: { lotId: string; onHandKg: Prisma.Decimal }) => ({
+                lotId: r.lotId,
+                quantityKg: r.onHandKg,
+              }))
+          : batch.inputs;
+      const totalCost = await costing.total(inputs);
+      const goodKg = batch.outputs
+        .filter(
+          (o: { lot: { item: { kind: string } } }) =>
+            o.lot.item.kind === "PRODUCT",
+        )
+        .reduce(
+          (a: Prisma.Decimal, o: { quantityKg: Prisma.Decimal }) =>
+            a.plus(o.quantityKg),
+          batch.carryoverKg,
+        );
+      const unitCost =
+        batch.status === "COMPLETED" && goodKg.gt(0)
+          ? {
+              known: totalCost.known,
+              amounts: Object.fromEntries(
+                Object.entries(totalCost.amounts).map(([c, a]) => [
+                  c,
+                  decimal(a).div(goodKg).toString(),
+                ]),
+              ),
+            }
+          : null;
+      valued.push({
+        ...batch,
+        totalCost,
+        unitCost,
+        carryoverValue: unitCost
+          ? scaleCost(unitCost, batch.carryoverKg)
+          : null,
+      });
+    }
+    return { ...result, items: valued };
   }
   @Get("shifts") shifts(@Query() q: PageQuery) {
     return page(this.db.shiftInstance, { orderBy: { startsAt: "desc" } }, q);

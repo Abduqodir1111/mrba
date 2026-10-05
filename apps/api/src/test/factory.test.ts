@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import "reflect-metadata";
 import { before, after, test } from "node:test";
 import assert from "node:assert/strict";
@@ -88,6 +89,69 @@ before(async () => {
 });
 after(async () => {
   await app?.close();
+});
+test("shift closing blocks unfinished batches and reopening requires a reason; retries are idempotent", async () => {
+  const shift = await db.shiftInstance.create({
+    data: {
+      businessDate: "2026-01-01",
+      startsAt: new Date("2026-01-01T03:00:00Z"),
+      endsAt: new Date("2026-01-01T15:00:00Z"),
+      code: `TEST-${suffix}`,
+      name: "Test shift lifecycle",
+    },
+  });
+  const warehouse = await db.stockLocation.findUniqueOrThrow({
+    where: { id: location },
+  });
+  const wip = await db.stockLocation.create({
+    data: {
+      warehouseId: warehouse.warehouseId,
+      name: `Shift test ${suffix}`,
+      kind: "WIP",
+    },
+  });
+  const unfinished = await db.productionBatch.create({
+    data: {
+      number: `SHIFT-${suffix}`,
+      equipmentId: equipment,
+      shiftId: shift.id,
+      wipLocationId: wip.id,
+    },
+  });
+  const close = `/shifts/${shift.id}/close`;
+  const reopen = `/shifts/${shift.id}/reopen`;
+  const read = () =>
+    db.shiftInstance.findUniqueOrThrow({ where: { id: shift.id } });
+  await post(close, { version: 1 }, randomUUID(), 409);
+  assert.equal((await read()).status, "OPEN");
+  await post(`/batches/${unfinished.id}/cancel`, {
+    reason: "Cancel test batch",
+  });
+  await post(close, { version: 999 }, randomUUID(), 409);
+  const closeKey = randomUUID();
+  await post(close, { version: 1 }, closeKey);
+  await post(close, { version: 1 }, closeKey);
+  assert.equal((await read()).status, "CLOSED");
+  assert.equal((await read()).version, 2);
+  await post(close, { version: 2 }, randomUUID(), 409);
+  for (const body of [{}, { reason: "   " }]) {
+    await post(reopen, body, randomUUID(), 400);
+  }
+  assert.equal((await read()).status, "CLOSED");
+  const reopenKey = randomUUID();
+  await post(reopen, { reason: "Correction required" }, reopenKey);
+  await post(reopen, { reason: "Correction required" }, reopenKey);
+  assert.equal((await read()).status, "OPEN");
+  assert.equal((await read()).version, 3);
+  await post(reopen, { reason: "Already open" }, randomUUID(), 409);
+  await post(close, { version: 1 }, randomUUID(), 409);
+  const results = await Promise.all([
+    rawPost(close, { version: 3 }),
+    rawPost(close, { version: 3 }),
+  ]);
+  assert.deepEqual(results.map((r) => r.status).sort(), [201, 409]);
+  assert.equal((await read()).status, "CLOSED");
+  assert.equal((await read()).version, 4);
 });
 test("integer kilogram validation accepts exact tonnes, rejects fractional kg", async () => {
   for (const [quantity, unit] of [
@@ -1160,4 +1224,212 @@ test("direct product sale uses stock, currencies, exact prices and prevents repl
     reversed.rows.some((r: any) => r.itemId === itemId && r.currency === "UZS"),
     false,
   );
+});
+
+test("manual receipt discount preserves physical stock and survives retry; invalid discount rolls back", async () => {
+  const id = randomUUID();
+  const name = `Discount ${id}`;
+  const body = {
+    currency: "UZS",
+    lines: [
+      {
+        materialName: name,
+        quantity: "5",
+        unit: "t",
+        unitPricePerKg: "100",
+        discountKg: "300",
+      },
+    ],
+  };
+  const receipt = (await post("/purchase-receipts", body, id)).body;
+  assert.deepEqual((await post("/purchase-receipts", body, id)).body, receipt);
+  const line = await db.purchaseLine.findFirstOrThrow({
+    where: { receiptId: receipt.id },
+    include: {
+      lot: { include: { stockLot: { include: { balances: true } } } },
+    },
+  });
+  assert.equal(line.quantityKg.toString(), "5000");
+  assert.equal(line.discountKg.toString(), "300");
+  assert.equal(line.amount.toString(), "470000");
+  assert.equal(line.lot!.stockLot!.balances[0].onHandKg.toString(), "5000");
+  const { Costing } = await import("../costing");
+  assert.equal((await new Costing(db).unit(line.lot!.id)).amounts.UZS, "94");
+  const summary = (
+    await request(app.getHttpServer())
+      .get("/api/v1/inventory/discounts")
+      .set("Authorization", `Bearer ${token}`)
+      .expect(200)
+  ).body;
+  assert.equal(
+    summary.items.find((r: any) => r.materialId === line.materialId).discountKg,
+    "300.000",
+  );
+  for (const discountKg of ["5001", "-1", "1.5"]) {
+    const badId = randomUUID();
+    const result = await rawPost(
+      "/purchase-receipts",
+      { ...body, lines: [{ ...body.lines[0], discountKg }] },
+      badId,
+    );
+    assert.ok([400, 409].includes(result.status), result.text);
+    assert.equal(
+      await db.commandReceipt.count({ where: { commandId: badId } }),
+      0,
+    );
+  }
+});
+
+test("kettle carryover retains discounted cost; new stock blends at its own cost; waste has no duplicate value", async () => {
+  const { Costing, scaleCost } = await import("../costing");
+  const mat = (await post("/materials", { name: `Cost ${randomUUID()}` })).body
+    .id;
+  await post("/purchase-receipts", {
+    currency: "UZS",
+    lines: [
+      {
+        materialId: mat,
+        quantity: "5000",
+        unit: "kg",
+        unitPricePerKg: "100",
+        discountKg: "500",
+      },
+    ],
+  });
+  const eq = (
+    await post("/equipment", {
+      name: `Cost kettle ${randomUUID()}`,
+      direction: "BRASS",
+    })
+  ).body.id;
+  const b = (await post("/batches", { equipmentId: eq })).body;
+  await post(`/batches/${b.id}/load`, {
+    lines: [{ itemId: mat, quantityKg: "5000" }],
+  });
+  const payload = {
+    version: 1,
+    locationId: location,
+    handover: true,
+    carryoverItemId: product,
+    lossKg: "0",
+    outputs: [
+      { itemId: product, quantityKg: "1000" },
+      { itemId: waste, quantityKg: "500" },
+    ],
+  };
+  const key = randomUUID();
+  const result = (await post(`/batches/${b.id}/complete`, payload, key)).body;
+  assert.equal(result.carryoverKg, "3500");
+  assert.equal(result.lossKg, "0");
+  assert.deepEqual(
+    (await post(`/batches/${b.id}/complete`, payload, key)).body,
+    result,
+  );
+  const carried = await db.stockLot.findFirstOrThrow({
+    where: { originDocumentId: key, isCarryover: true },
+  });
+  const produced = await db.stockLot.findFirstOrThrow({
+    where: { originDocumentId: key, itemId: product, isCarryover: false },
+  });
+  const wasteOut = await db.stockLot.findFirstOrThrow({
+    where: { originDocumentId: key, itemId: waste },
+  });
+  const c = new Costing(db);
+  assert.equal((await c.unit(carried.id)).amounts.UZS, "100");
+  assert.equal((await c.unit(produced.id)).amounts.UZS, "100");
+  assert.deepEqual(await c.unit(wasteOut.id), { known: true, amounts: {} });
+  assert.equal(scaleCost(await c.unit(carried.id), 3500).amounts.UZS, "350000");
+  await post("/purchase-receipts", {
+    currency: "UZS",
+    lines: [
+      { materialId: mat, quantity: "1500", unit: "kg", unitPricePerKg: "200" },
+    ],
+  });
+  await post(`/batches/${result.nextBatchId}/load`, {
+    lines: [{ itemId: mat, quantityKg: "1500" }],
+  });
+  const endKey = randomUUID();
+  await post(
+    `/batches/${result.nextBatchId}/complete`,
+    {
+      version: 1,
+      locationId: location,
+      outputs: [
+        { itemId: product, quantityKg: "4000" },
+        { itemId: waste, quantityKg: "500" },
+      ],
+    },
+    endKey,
+  );
+  const finalLot = await db.stockLot.findFirstOrThrow({
+    where: { originDocumentId: endKey, itemId: product },
+  });
+  assert.equal((await new Costing(db).unit(finalLot.id)).amounts.UZS, "162.5");
+  assert.equal((await new Costing(db).unit(carried.id)).amounts.UZS, "100");
+});
+
+test("valuation keeps USD and UZS separate and explicit handover loss enforces mass balance", async () => {
+  const { Costing } = await import("../costing");
+  const b = await handoverFixture("100");
+  const mat = (await post("/materials", { name: `USD cost ${randomUUID()}` }))
+    .body.id;
+  await post("/purchase-receipts", {
+    currency: "USD",
+    lines: [
+      { materialId: mat, quantity: "100", unit: "kg", unitPricePerKg: "3" },
+    ],
+  });
+  await post(`/batches/${b.id}/load`, {
+    lines: [{ itemId: mat, quantityKg: "100" }],
+  });
+  const body = {
+    version: 1,
+    locationId: location,
+    handover: true,
+    carryoverItemId: product,
+    lossKg: "200",
+    outputs: [],
+  };
+  await post(`/batches/${b.id}/complete`, body, randomUUID(), 409);
+  const id = randomUUID();
+  const result = (
+    await post(`/batches/${b.id}/complete`, { ...body, lossKg: "0" }, id)
+  ).body;
+  assert.equal(result.carryoverKg, "200");
+  const carry = await db.stockLot.findFirstOrThrow({
+    where: { originDocumentId: id, isCarryover: true },
+  });
+  assert.deepEqual(await new Costing(db).unit(carry.id), {
+    known: true,
+    amounts: { UZS: "1", USD: "1.5" },
+  });
+});
+
+test("percentage discount follows acceptance return and manual kg discount without removing discounted stock", async () => {
+  const id = randomUUID();
+  const body = { currency: "UZS", lines: [{ materialName: `Percent ${id}`, quantity: "10", unit: "t", returnedKg: "500", discountKg: "300", discountPercent: "10", unitPricePerKg: "100" }] };
+  const receipt = (await post("/purchase-receipts", body, id)).body;
+  assert.deepEqual((await post("/purchase-receipts", body, id)).body, receipt);
+  const line = await db.purchaseLine.findFirstOrThrow({ where: { receiptId: receipt.id }, include: { lot: { include: { stockLot: { include: { balances: true } } } } } });
+  assert.equal(line.quantityKg.toString(), "9500");
+  assert.equal(line.returnedKg.toString(), "500");
+  assert.equal(line.percentDiscountKg.toString(), "920");
+  assert.equal(line.amount.toString(), "828000");
+  assert.equal(line.lot!.stockLot!.balances[0].onHandKg.toString(), "9500");
+  const { Costing } = await import("../costing");
+  const cost = await new Costing(db).unit(line.lot!.id);
+  assert.ok(new Prisma.Decimal(cost.amounts.UZS).times(9500).minus(828000).abs().lt("0.000001"));
+  for (const change of [{ discountPercent: "101" }, { discountPercent: "-1" }, { discountPercent: "1.123" }, { returnedKg: "10000" }, { returnedKg: "9800" }, { returnedKg: "-1" }]) {
+    const bad = randomUUID();
+    const response = await rawPost("/purchase-receipts", { ...body, lines: [{ ...body.lines[0], ...change }] }, bad);
+    assert.ok([400,409].includes(response.status), response.text);
+    assert.equal(await db.commandReceipt.count({ where: { commandId: bad } }), 0);
+  }
+  for (const percent of ["0", "100", "12.55"]) {
+    const saved = (await post("/purchase-receipts", { ...body, lines: [{ ...body.lines[0], discountPercent: percent }] })).body;
+    const row = await db.purchaseLine.findFirstOrThrow({ where: { receiptId: saved.id } });
+    const extra = new Prisma.Decimal(9200).times(percent).div(100).toDecimalPlaces(3);
+    assert.equal(row.percentDiscountKg.toString(), extra.toString());
+    assert.equal(row.amount.toString(), new Prisma.Decimal(9200).minus(extra).times(100).toString());
+  }
 });

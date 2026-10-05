@@ -142,6 +142,10 @@ model PurchaseReceipt {
   lines PurchaseLine[]
 }
 model PurchaseLine {
+  returnedKg Decimal @default(0) @db.Decimal(20,3)
+  discountPercent Decimal @default(0) @db.Decimal(5,2)
+  percentDiscountKg Decimal @default(0) @db.Decimal(20,3)
+  discountKg Decimal @default(0) @db.Decimal(20,3)
   id String @id @default(uuid()) @db.Uuid
   receiptId String @db.Uuid
   receipt PurchaseReceipt @relation(fields: [receiptId], references: [id], onDelete: Restrict)

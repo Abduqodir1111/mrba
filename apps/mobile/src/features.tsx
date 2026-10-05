@@ -40,6 +40,28 @@ const fmt = (value: any) => {
     (fraction ? "," + fraction : "")
   );
 };
+type CostValue = { known: boolean; amounts: Record<string, string> };
+const costText = (value?: CostValue | null, perKg = false) => {
+  if (!value || !value.known) return "Стоимость не определена";
+  const entries = Object.entries(value.amounts);
+  return entries.length
+    ? entries
+        .map(
+          ([currency, amount]) =>
+            `${fmt(new Decimal(amount).toDecimalPlaces(2))} ${currency}${perKg ? "/кг" : ""}`,
+        )
+        .join(" + ")
+    : "0";
+};
+const sumValues = (values: (CostValue | undefined)[]): CostValue => {
+  const amounts: Record<string, string> = {};
+  for (const value of values)
+    for (const [currency, amount] of Object.entries(value?.amounts ?? {}))
+      amounts[currency] = new Decimal(amounts[currency] ?? 0)
+        .plus(amount)
+        .toString();
+  return { known: values.every((v) => !!v?.known), amounts };
+};
 const documentName = (v: string) =>
   (
     ({
@@ -182,6 +204,7 @@ type Field = {
   weight?: boolean;
   required?: boolean;
   value?: string;
+  editableComment?: boolean;
 };
 type Form = {
   title: string;
@@ -190,6 +213,7 @@ type Form = {
   repeat?: { label: string; fields: Field[]; minimum?: number };
   wasteOptions?: Option[];
   loadedWeightKg?: string;
+  loadedCost?: CostValue;
   allowHandover?: boolean;
   loadingSummary?: boolean;
   saleStock?: Record<string, string>;
@@ -252,7 +276,7 @@ function Editor({
         f.value ??
           (f.key === "productId" && f.options?.length === 1
             ? f.options[0].id
-            : f.key === "reason"
+            : f.key === "reason" && !f.editableComment
               ? `Действие владельца: ${form.title}`
               : ""),
       ]),
@@ -271,7 +295,9 @@ function Editor({
       ).flat()
     : [];
   const fields = [...form.fields, ...repeated].filter(
-    (f) => !["reason", "notes"].includes(f.key.split(".").at(-1) ?? ""),
+    (f) =>
+      f.editableComment ||
+      !["reason", "notes"].includes(f.key.split(".").at(-1) ?? ""),
   );
   const [weightUnit, setWeightUnit] = useState<"kg" | "t">("kg");
   const enteredWeight = (value: string | undefined): Decimal | null => {
@@ -298,8 +324,7 @@ function Editor({
     loadedKg && wasteTotal && finishedProductKg
       ? loadedKg.minus(wasteTotal).minus(finishedProductKg)
       : null;
-  const estimatedLossKg =
-    loadedKg?.div(100).toDecimalPlaces(0, Decimal.ROUND_HALF_UP) ?? null;
+  const estimatedLossKg = enteredWeight(values.lossKg);
   const lossKg = handover ? estimatedLossKg : actualLossKg;
   const carryoverKg =
     actualLossKg && estimatedLossKg
@@ -315,6 +340,22 @@ function Editor({
     weight && loadedKg?.gt(0)
       ? `${weight.div(loadedKg).times(100).toFixed(2).replace(".", ",")}%`
       : "—";
+  const usefulKg =
+    finishedProductKg && (handover ? carryoverKg : new Decimal(0))
+      ? finishedProductKg.plus(handover ? carryoverKg! : 0)
+      : null;
+  const completionUnitCost =
+    form.loadedCost && usefulKg?.gt(0)
+      ? {
+          known: form.loadedCost.known,
+          amounts: Object.fromEntries(
+            Object.entries(form.loadedCost.amounts).map(([c, a]) => [
+              c,
+              new Decimal(a).div(usefulKg).toString(),
+            ]),
+          ),
+        }
+      : null;
   const saleAvailable = enteredWeight(form.saleStock?.[values.itemId]);
   const saleQuantity = enteredWeight(values.quantityKg);
   const salePrice = enteredWeight(values.unitPricePerKg);
@@ -335,7 +376,14 @@ function Editor({
           "Проверьте покупателя, количество и цену. Продажа не должна превышать доступный остаток.",
         );
       const v: Record<string, string> = { ...values };
-      if (form.allowHandover) v._handover = String(handover);
+      if (form.allowHandover) {
+        v._handover = String(handover);
+        if (handover) {
+          if (!estimatedLossKg || !estimatedLossKg.isInteger())
+            throw Error("Укажите потери целым неотрицательным числом кг");
+          v.lossKg = estimatedLossKg.toFixed(0);
+        }
+      }
       if (handover && !v.productQuantityKg?.trim()) v.productQuantityKg = "0";
       for (const f of fields) {
         if (f.key === "productId") {
@@ -376,7 +424,7 @@ function Editor({
       if (form.allowHandover) {
         if (handover && (!carryoverKg || carryoverKg.lte(0)))
           throw Error(
-            "После вычета продукции, отходов и 1% потерь должен остаться металл. Если котёл пуст — выключите пересменку.",
+            "После вычета продукции, отходов и указанных потерь должен остаться металл. Если котёл пуст — выключите пересменку.",
           );
         if (!handover && (!finishedProductKg || finishedProductKg.lte(0)))
           throw Error("Укажите вес выпущенной готовой продукции");
@@ -409,7 +457,10 @@ function Editor({
                 accessibilityLabel="Закрыть"
                 disabled={busy}
                 onPress={close}
-                style={({ pressed }) => [s.modalClose, pressed && { opacity: 0.6 }]}
+                style={({ pressed }) => [
+                  s.modalClose,
+                  pressed && { opacity: 0.6 },
+                ]}
               >
                 <Ionicons name="close" color={c.ink} size={20} />
               </Pressable>
@@ -608,9 +659,25 @@ function Editor({
                       </View>
                       <Text style={s.muted}>
                         {handover
-                          ? "Потери: 1% от веса этого этапа, включая остаток предыдущей смены, с округлением до целого кг. Остаток перейдёт следующей смене в этом котле. Если продукцию ещё не извлекли, укажите 0 кг."
+                          ? "Укажите фактические потери отдельно. Остаток перейдёт следующей смене вместе с таннархом. Если продукцию ещё не извлекли, укажите 0 кг."
                           : "Котёл пуст: весь недостающий вес будет учтён как безвозвратные потери."}
                       </Text>
+                    </View>
+                  )}
+                  {handover && (
+                    <View style={{ marginBottom: 16 }}>
+                      <Text style={s.label}>Безвозвратные потери, кг</Text>
+                      <TextInput
+                        accessibilityLabel="Безвозвратные потери, кг"
+                        style={s.input}
+                        keyboardType="number-pad"
+                        placeholder="0"
+                        value={values.lossKg ?? ""}
+                        editable={!busy}
+                        onChangeText={(value) =>
+                          setValues((prev) => ({ ...prev, lossKg: value }))
+                        }
+                      />
                     </View>
                   )}
                   <Text style={s.label}>Виды отходов</Text>
@@ -711,6 +778,14 @@ function Editor({
                         value={carryoverKg ? `${fmt(carryoverKg)} кг` : "—"}
                       />
                     )}
+                    <Row
+                      label="Стоимость загрузки"
+                      value={costText(form.loadedCost)}
+                    />
+                    <Row
+                      label="Таннарх продукции и остатка"
+                      value={costText(completionUnitCost, true)}
+                    />
                     {handover && carryoverKg?.lte(0) && (
                       <Text style={s.error}>
                         Нет остатка для передачи. Проверьте вес или выключите
@@ -751,12 +826,7 @@ function Editor({
               {!!error && <Text style={s.error}>{error}</Text>}
             </KeyboardAwareScrollView>
             <View style={s.modalFooter}>
-              <Btn
-                secondary
-                title="Отмена"
-                disabled={busy}
-                onPress={close}
-              />
+              <Btn secondary title="Отмена" disabled={busy} onPress={close} />
               <View style={{ flex: 1 }}>
                 <Btn
                   title={busy ? "Сохранение…" : actionLabel}
@@ -813,6 +883,7 @@ export function Workspace({
   const [cursors, setCursors] = useState<Record<string, string | null>>({});
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState("");
+  const [actionError, setActionError] = useState("");
   const [form, setForm] = useState<Form | null>(null);
   const [search, setSearch] = useState("");
   const [view, setView] = useState("");
@@ -834,7 +905,14 @@ export function Workspace({
           : section === "sales"
             ? ["items", "customers", "contracts", "shipments", "stock"]
             : section === "inventory"
-              ? ["stock", "locations", "reservations", "items", "suppliers"]
+              ? [
+                  "stock",
+                  "locations",
+                  "reservations",
+                  "items",
+                  "suppliers",
+                  "inventory/discounts",
+                ]
               : [
                   "items",
                   "equipment",
@@ -900,10 +978,14 @@ export function Workspace({
           key,
           onHandKg: new Decimal(0),
           reservedKg: new Decimal(0),
+          discountOnHandKg: new Decimal(0),
           entries: [],
         };
         group.onHandKg = group.onHandKg.plus(r.onHandKg);
         group.reservedKg = group.reservedKg.plus(r.reservedKg);
+        group.discountOnHandKg = group.discountOnHandKg.plus(
+          r.discountOnHandKg ?? 0,
+        );
         group.entries.push(r);
         groups.set(key, group);
         return groups;
@@ -951,12 +1033,13 @@ export function Workspace({
       title,
       message: "Подтвердите действие.",
       onConfirm: async () => {
+        setActionError("");
         try {
           await mutate(path, body);
           await load();
           onChanged();
         } catch (e) {
-          Alert.alert("Не удалось выполнить", (e as Error).message);
+          setActionError((e as Error).message);
         }
       },
     });
@@ -979,28 +1062,6 @@ export function Workspace({
       quantity: (previous?.quantity ?? new Decimal(0)).plus(available),
     });
   }
-  const transfer = (r: any, destination?: string) =>
-    setup(
-      "Переместить партию",
-      "/inventory/transfer",
-      [
-        weight(),
-        opt(
-          "destinationId",
-          "Куда",
-          options(
-            rows("locations").filter(
-              (l) =>
-                l.id !== r.locationId &&
-                (!l.batch || l.batch.status === "IN_PROGRESS"),
-            ),
-          ),
-        ),
-        reason,
-      ],
-      (v) => ({ ...v, lotId: r.lotId, locationId: r.locationId }),
-      `Доступно ${fmt(new Decimal(r.onHandKg).minus(r.reservedKg))} кг. ${r.lot.item.name}`,
-    );
   return (
     <View>
       {section === "production" && (
@@ -1038,6 +1099,11 @@ export function Workspace({
       )}
       {busy && <ActivityIndicator color={c.blue} />}
       {!!error && <Text style={s.error}>{error}</Text>}
+      {!!actionError && section !== "production" && (
+        <Text accessibilityRole="alert" style={s.error}>
+          {actionError}
+        </Text>
+      )}
       {section !== "production" &&
         !(section === "sales" && salesView === "report") && (
           <View style={s.row}>
@@ -1114,6 +1180,19 @@ export function Workspace({
                 <Text style={s.muted}>{b.number}</Text>
                 <Row label={b.shift.name} value={b.shift.businessDate} />
                 <Row label="Начало" value={date(b.startedAt)} />
+                <Row
+                  label="Стоимость сырья и остатка"
+                  value={costText(b.totalCost)}
+                />
+                {b.unitCost && (
+                  <Row label="Таннарх" value={costText(b.unitCost, true)} />
+                )}
+                {b.carryoverValue && new Decimal(b.carryoverKg).gt(0) && (
+                  <Row
+                    label="Стоимость переданного остатка"
+                    value={costText(b.carryoverValue)}
+                  />
+                )}
                 {b.previousBatch && (
                   <Row
                     label="Остаток предыдущей смены"
@@ -1190,6 +1269,11 @@ export function Workspace({
                         setForm({
                           title: "Результат плавки",
                           allowHandover: true,
+                          loadedCost: sumValues(
+                            rows("stock")
+                              .filter((r) => r.locationId === b.wipLocationId)
+                              .map((r) => r.stockValue),
+                          ),
                           loadedWeightKg: rows("stock")
                             .filter((r) => r.locationId === b.wipLocationId)
                             .reduce(
@@ -1231,7 +1315,10 @@ export function Workspace({
                               locationId: mainStorage.id,
                               handover: v._handover === "true",
                               ...(v._handover === "true"
-                                ? { carryoverItemId: v.productId }
+                                ? {
+                                    carryoverItemId: v.productId,
+                                    lossKg: v.lossKg,
+                                  }
                                 : {}),
                               outputs: [
                                 ...(new Decimal(v.productQuantityKg).gt(0)
@@ -1279,6 +1366,11 @@ export function Workspace({
               </Card>
             ))}
           <Text style={s.section}>Смены</Text>
+          {!!actionError && (
+            <Text accessibilityRole="alert" style={s.error}>
+              {actionError}
+            </Text>
+          )}
           {filtered("shifts").map((sh) => (
             <Card key={sh.id}>
               <Row label={sh.name} value={sh.businessDate} />
@@ -1294,7 +1386,7 @@ export function Workspace({
                         version: sh.version,
                       })
                     : setup("Повторное открытие", `/shifts/${sh.id}/reopen`, [
-                        reason,
+                        { ...reason, editableComment: true },
                       ])
                 }
               />
@@ -1345,7 +1437,16 @@ export function Workspace({
                         ),
                       ),
                     ),
-                    weight("quantity", "Вес"),
+                    weight("quantity", "Получено до возврата"),
+                    { key: "returnedKg", label: "Возврат при приёмке, кг", number: true, required: false, value: "0" },
+                    { key: "discountPercent", label: "Дополнительная скидка, %", number: true, required: false, value: "0" },
+                    {
+                      key: "discountKg",
+                      label: "Скидка, кг (вручную)",
+                      number: true,
+                      required: false,
+                      value: "0",
+                    },
                     {
                       key: "unitPricePerKg",
                       label: "Цена за кг",
@@ -1357,7 +1458,13 @@ export function Workspace({
                   send("/purchase-receipts", {
                     currency: v.currency,
                     notes: v.notes,
-                    lines: formRows(v).map((l) => ({ ...l, unit: "kg" })),
+                    lines: formRows(v).map((l) => ({
+                      ...l,
+                      returnedKg: new Decimal(l.returnedKg || "0").toFixed(),
+                      discountPercent: new Decimal(l.discountPercent || "0").toFixed(),
+                      discountKg: new Decimal(l.discountKg || "0").toFixed(),
+                      unit: "kg",
+                    })),
                   }),
               })
             }
@@ -1471,6 +1578,12 @@ export function Workspace({
                       <Text style={s.muted}>Доступно</Text>
                     </View>
                   </View>
+                  <Row
+                    label="Стоимость остатка"
+                    value={costText(
+                      sumValues(group.entries.map((r: any) => r.stockValue)),
+                    )}
+                  />
                   {group.reservedKg.gt(0) && (
                     <Text style={[s.muted, { marginTop: 8 }]}>
                       В наличии: {mass(group.onHandKg)} · В резерве:{" "}
@@ -1483,6 +1596,34 @@ export function Workspace({
                   <Text style={s.section}>{group.lot.item.name}</Text>
                   <Text style={s.muted}>{group.location.name}</Text>
                   <Row label="В наличии" value={mass(group.onHandKg)} />
+                  {group.lot.item.kind === "MATERIAL" && (
+                    <>
+                      <Row
+                        label="Основная часть остатка"
+                        value={mass(
+                          group.onHandKg.minus(group.discountOnHandKg),
+                        )}
+                      />
+                      <Row
+                        label="Из скидки · в остатке"
+                        value={mass(group.discountOnHandKg)}
+                      />
+                      <Row
+                        label="Получено по скидке · за всё время"
+                        value={mass(
+                          rows("inventory/discounts").find(
+                            (r) => r.materialId === group.lot.itemId,
+                          )?.discountKg ?? 0,
+                        )}
+                      />
+                    </>
+                  )}
+                  <Row
+                    label="Стоимость остатка"
+                    value={costText(
+                      sumValues(group.entries.map((r: any) => r.stockValue)),
+                    )}
+                  />
                   <Row
                     label="Доступно"
                     value={mass(group.onHandKg.minus(group.reservedKg))}
@@ -1542,15 +1683,26 @@ export function Workspace({
                           Поступление {date(r.lot.createdAt)} ·{" "}
                           {mass(r.onHandKg)}
                         </Text>
-                        <Btn
-                          secondary
-                          title={
-                            r.location.kind === "WIP"
-                              ? "Вернуть на склад"
-                              : "Переместить / выдать в плавку"
-                          }
-                          onPress={() => transfer(r)}
+                        <Row
+                          label="Таннарх партии"
+                          value={costText(r.unitCost, true)}
                         />
+                        {r.lot.purchaseLot?.line && (
+                          <>
+                            <Row
+                              label="Получено / скидка"
+                              value={`${fmt(r.lot.purchaseLot.line.quantityKg)} / ${fmt(r.lot.purchaseLot.line.discountKg)} кг`}
+                            />
+                            <Row
+                              label="Доп. скидка" value={`${fmt(r.lot.purchaseLot.line.discountPercent)}% · ${fmt(r.lot.purchaseLot.line.percentDiscountKg)} кг`}
+                            />
+                            <Row label="Возврат при приёмке" value={`${fmt(r.lot.purchaseLot.line.returnedKg)} кг`} />
+                            <Row
+                              label="Вес к оплате"
+                              value={`${fmt(new Decimal(r.lot.purchaseLot.line.quantityKg).minus(r.lot.purchaseLot.line.discountKg).minus(r.lot.purchaseLot.line.percentDiscountKg))} кг`}
+                            />
+                          </>
+                        )}
                         {stockKind(r) === "WASTE" && (
                           <Row
                             label="Назначение отходов"
@@ -2189,7 +2341,10 @@ export function Workspace({
                         await load();
                         onChanged();
                       } catch (e) {
-                        Alert.alert("Операция не завершена", (e as Error).message);
+                        Alert.alert(
+                          "Операция не завершена",
+                          (e as Error).message,
+                        );
                         onChanged();
                       }
                     },

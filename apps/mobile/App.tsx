@@ -190,10 +190,11 @@ function FactoryApp() {
   const [boot, setBoot] = useState(true);
   const [busy, setBusy] = useState(false);
   const [tab, setTab] = useState<Tab>("Главная");
-  const [moreView, setMoreView] = useState<"menu" | "reports" | "management" | "leads">(
-    "menu",
-  );
+  const [moreView, setMoreView] = useState<
+    "menu" | "reports" | "management" | "leads"
+  >("menu");
   const [data, setData] = useState<Dashboard | null>(null);
+  const [workspaceRefresh, setWorkspaceRefresh] = useState(0);
   const [materials, setMaterials] = useState<Named[]>([]);
   const [suppliers, setSuppliers] = useState<Named[]>([]);
   const [lots, setLots] = useState<any[]>([]);
@@ -220,6 +221,7 @@ function FactoryApp() {
       setMaterials(m);
       setSuppliers(sp);
       setLots(ls);
+      setWorkspaceRefresh((revision) => revision + 1);
       setError("");
       setUnresolved(Boolean(await pending()));
     } catch (e) {
@@ -369,7 +371,11 @@ function FactoryApp() {
                 value={password}
                 onChangeText={setPassword}
               />
-              {loginName.trim().toLowerCase() === "review@mrba.uz" ? <Text style={s.muted}>Демонстрационная среда · учебные данные</Text> : null}
+              {loginName.trim().toLowerCase() === "review@mrba.uz" ? (
+                <Text style={s.muted}>
+                  Демонстрационная среда · учебные данные
+                </Text>
+              ) : null}
               {error ? <Text style={s.errorText}>{error}</Text> : null}
               <Button
                 title="Войти в систему   →"
@@ -382,8 +388,14 @@ function FactoryApp() {
               <Icon name="shield-checkmark-outline" color={c.green} size={18} />
               <Text style={s.muted}>Защищённый доступ владельца</Text>
             </View>
-            <Pressable accessibilityRole="link" onPress={() => openPublicPage("https://mrba.uz/privacy")} style={{ paddingVertical: 12 }}>
-              <Text style={[s.muted, { textAlign: "center" }]}>Политика конфиденциальности</Text>
+            <Pressable
+              accessibilityRole="link"
+              onPress={() => openPublicPage("https://mrba.uz/privacy")}
+              style={{ paddingVertical: 12 }}
+            >
+              <Text style={[s.muted, { textAlign: "center" }]}>
+                Политика конфиденциальности
+              </Text>
             </Pressable>
             <Text style={s.location}>КАТТАКУРГАН · УЗБЕКИСТАН</Text>
           </KeyboardAwareScrollView>
@@ -581,14 +593,26 @@ function FactoryApp() {
               onPress={() => open("purchase")}
               disabled={!canWrite}
             />
-            <Workspace section="inventory" onChanged={() => void reload()} />
+            <Workspace
+              section="inventory"
+              refreshKey={workspaceRefresh}
+              onChanged={() => void reload()}
+            />
           </>
         )}
         {tab === "Производство" && (
-          <Workspace section="production" onChanged={() => void reload()} />
+          <Workspace
+            section="production"
+            refreshKey={workspaceRefresh}
+            onChanged={() => void reload()}
+          />
         )}
         {tab === "Продажи" && (
-          <Workspace section="sales" onChanged={() => void reload()} />
+          <Workspace
+            section="sales"
+            refreshKey={workspaceRefresh}
+            onChanged={() => void reload()}
+          />
         )}
         {tab === "Ещё" && (
           <>
@@ -601,7 +625,11 @@ function FactoryApp() {
             )}
             {moreView === "reports" && <Reports />}
             {moreView === "management" && (
-              <Workspace section="management" onChanged={() => void reload()} />
+              <Workspace
+                section="management"
+                refreshKey={workspaceRefresh}
+                onChanged={() => void reload()}
+              />
             )}
             {false && moreView === "leads" && <LeadAgent />}
             {moreView === "menu" && (
@@ -673,18 +701,28 @@ function FactoryApp() {
                     </View>
                   ))}
                 </View>
-                <Button title="Политика конфиденциальности" secondary onPress={() => openPublicPage("https://mrba.uz/privacy")} />
-                <Button title="Поддержка" secondary onPress={() => openPublicPage("https://mrba.uz/support")} />
+                <Button
+                  title="Политика конфиденциальности"
+                  secondary
+                  onPress={() => openPublicPage("https://mrba.uz/privacy")}
+                />
+                <Button
+                  title="Поддержка"
+                  secondary
+                  onPress={() => openPublicPage("https://mrba.uz/support")}
+                />
                 <Button
                   title="Выйти из аккаунта"
                   secondary
-                  onPress={() => confirmAction({
-                    title: "Выйти?",
-                    message: "Данные сохранены на сервере.",
-                    confirmText: "Выйти",
-                    destructive: true,
-                    onConfirm: signOut,
-                  })}
+                  onPress={() =>
+                    confirmAction({
+                      title: "Выйти?",
+                      message: "Данные сохранены на сервере.",
+                      confirmText: "Выйти",
+                      destructive: true,
+                      onConfirm: signOut,
+                    })
+                  }
                 />
               </>
             )}
@@ -796,7 +834,45 @@ function EntryModal({
   const [material, setMaterial] = useState(materials.length ? "" : "new");
   const [quantity, setQuantity] = useState("");
   const [price, setPrice] = useState("");
+  const [discountKg, setDiscountKg] = useState("");
+  const [returnedKg, setReturnedKg] = useState("");
+  const [discountPercent, setDiscountPercent] = useState("");
   const [unit, setUnit] = useState("t");
+  const receiptPreview = (() => {
+    try {
+      const received = new Decimal(quantity.replace(",", ".") || "0").times(
+        unit === "t" ? 1000 : 1,
+      );
+      const returned = new Decimal(returnedKg.replace(",", ".") || "0");
+      const percent = new Decimal(discountPercent.replace(",", ".") || "0");
+      const discount = new Decimal(discountKg.replace(",", ".") || "0");
+      const p = new Decimal(price.replace(",", ".") || "0");
+      if (
+        !received.isFinite() ||
+        !received.isInteger() ||
+        !received.gt(0) ||
+        !discount.isFinite() ||
+        !discount.isInteger() ||
+        discount.lt(0) ||
+        discount.gt(received.minus(returned)) ||
+        !returned.isFinite() || !returned.isInteger() || returned.lt(0) || returned.gte(received) ||
+        !percent.isFinite() || percent.lt(0) || percent.gt(100) || percent.decimalPlaces() > 2 ||
+        !p.isFinite() ||
+        !p.gt(0)
+      )
+        return null;
+      const base = received.minus(returned).minus(discount);
+      const extraDiscount = base.times(percent).div(100).toDecimalPlaces(3);
+      return {
+        received: received.minus(returned),
+        base, extraDiscount,
+        payable: base.minus(extraDiscount),
+        amount: base.minus(extraDiscount).times(p),
+      };
+    } catch {
+      return null;
+    }
+  })();
   const [currency, setCurrency] = useState("UZS");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -805,6 +881,10 @@ function EntryModal({
     setBusy(true);
     setError("");
     try {
+      if (kind === "purchase" && !receiptPreview)
+        throw Error(
+          "Проверьте вес, цену и скидку: скидка должна быть целым числом кг от 0 до полученного веса.",
+        );
       await (draft ? saveDraft : mutate)(
         kind === "purchase"
           ? "/purchase-receipts"
@@ -822,6 +902,9 @@ function EntryModal({
                   quantity: quantity.replace(",", "."),
                   unit,
                   unitPricePerKg: price.replace(",", "."),
+                  returnedKg: new Decimal(returnedKg.trim() || "0").toFixed(),
+                  discountPercent: new Decimal(discountPercent.trim().replace(",", ".") || "0").toFixed(),
+                  discountKg: new Decimal(discountKg.trim().replace(",", ".") || "0").toFixed(0),
                 },
               ],
             }
@@ -845,7 +928,7 @@ function EntryModal({
     if (kind !== "purchase") return void save();
     confirmAction({
       title: "Подтвердить поступление?",
-      message: `${material === "new" ? name.trim() : materials.find((m) => m.id === material)?.name}\n${quantity} ${unit === "t" ? "т" : "кг"}\nЦена: ${price} ${currency}/кг\nСырьё будет добавлено на склад.`,
+      message: `${material === "new" ? name.trim() : materials.find((m) => m.id === material)?.name}\n${quantity} ${unit === "t" ? "т" : "кг"}\nЦена: ${price} ${currency}/кг\nСкидка: ${discountKg || "0"} кг\nК оплате: ${receiptPreview?.amount.toString() ?? "—"} ${currency}\nВозврат при приёмке: ${returnedKg || "0"} кг. Доп. скидка: ${discountPercent || "0"}%. На склад: ${receiptPreview?.received.toString() ?? "—"} кг.`,
       confirmText: "Принять сырьё",
       onConfirm: () => save(),
     });
@@ -922,6 +1005,23 @@ function EntryModal({
                     value={quantity}
                     onChangeText={setQuantity}
                   />
+                  <Field
+                    label="Возврат поставщику при приёмке, кг"
+                    placeholder="0" keyboardType="number-pad"
+                    value={returnedKg} onChangeText={setReturnedKg}
+                  />
+                  <Field
+                    label="Скидка по договорённости, кг"
+                    placeholder="0"
+                    keyboardType="number-pad"
+                    value={discountKg}
+                    onChangeText={setDiscountKg}
+                  />
+                  <Text style={s.muted}>
+                    Введите вручную. Эти килограммы остаются на складе, но не
+                    оплачиваются.
+                  </Text>
+                  <Field label="Дополнительная скидка, %" placeholder="0" keyboardType="decimal-pad" value={discountPercent} onChangeText={setDiscountPercent} />
                   <Choices
                     label="Валюта"
                     items={[
@@ -938,6 +1038,23 @@ function EntryModal({
                     value={price}
                     onChangeText={setPrice}
                   />
+                  {receiptPreview && (
+                    <View style={{ gap: 6 }}>
+                      <Text style={s.muted}>Основа скидки: {format(receiptPreview.base.toString())} кг · Доп. скидка: {format(receiptPreview.extraDiscount.toString())} кг ({discountPercent || "0"}%)</Text>
+                      <Text style={s.muted}>
+                        На склад: {format(receiptPreview.received.toString())}{" "}
+                        кг
+                      </Text>
+                      <Text style={s.muted}>
+                        Вес к оплате:{" "}
+                        {format(receiptPreview.payable.toString())} кг
+                      </Text>
+                      <Text style={s.sectionTitle}>
+                        К оплате: {format(receiptPreview.amount.toString())}{" "}
+                        {currency}
+                      </Text>
+                    </View>
+                  )}
                   <View style={s.notice}>
                     <Icon name="shield-checkmark-outline" color={c.green} />
                     <Text style={s.noticeText}>
@@ -961,8 +1078,7 @@ function EntryModal({
                   kind === "purchase"
                     ? !material ||
                       (material === "new" && !name.trim()) ||
-                      !quantity ||
-                      !price
+                      !receiptPreview
                     : !name.trim()
                 }
               />

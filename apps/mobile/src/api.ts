@@ -1,5 +1,5 @@
 import * as SecureStore from "./secure-storage";
-import * as Crypto from "expo-crypto";
+import { randomUUID } from "./uuid";
 import { apiEnvironment, environmentUrl } from "./environment";
 
 const API_URL =
@@ -57,7 +57,7 @@ export async function login(login: string, password: string) {
   await SecureStore.setItemAsync("mrba.environment", environment);
   let deviceId = await SecureStore.getItemAsync("mrba.device");
   if (!deviceId) {
-    deviceId = Crypto.randomUUID();
+    deviceId = randomUUID();
     await SecureStore.setItemAsync("mrba.device", deviceId);
   }
   await acceptTokens(
@@ -201,7 +201,7 @@ async function mutateInternal(path: string, body: unknown) {
     api("/system/context"),
   ]);
   const marker: Pending = {
-    id: Crypto.randomUUID(),
+    id: randomUUID(),
     actorId: me.id,
     epoch: context.recoveryEpoch,
     route: path,
@@ -270,7 +270,7 @@ export async function mutate(path: string, body: unknown) {
 }
 export async function saveDraft(path: string, body: unknown) {
   const context = await api("/system/context");
-  return api("/drafts/" + Crypto.randomUUID(), {
+  return api("/drafts/" + randomUUID(), {
     method: "POST",
     headers: { "X-Recovery-Epoch": context.recoveryEpoch },
     body: JSON.stringify({ route: path, payload: body, status: "DRAFT" }),
