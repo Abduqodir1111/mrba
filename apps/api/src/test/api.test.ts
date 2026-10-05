@@ -142,6 +142,25 @@ test("receipt numbers are consecutive across parallel multi-receipts and stable 
   assert.deepEqual(history.body.items.map((l: any) => l.number), receipts.flatMap(r => [r.number, r.number]).reverse());
 });
 
+test("receipt creates reusable supplier and material atomically without case duplicates", async () => {
+  const supplierName = `New supplier ${randomUUID()}`;
+  const materialName = `New material ${randomUUID()}`;
+  const body = {currency:"UZS", supplierName, lines:[{materialName,quantity:"100",unit:"kg"}]};
+  const send = (body: object) => request(app.getHttpServer()).post("/api/v1/purchase-receipts").set(headers()).set("Idempotency-Key",randomUUID()).send(body);
+  const result = await send(body).expect(201);
+  const created = await db.purchaseReceipt.findUniqueOrThrow({where:{id:result.body.id},include:{supplier:true,lines:{include:{material:true}}}});
+  assert.equal(created.supplier?.name,supplierName);
+  assert.equal(created.lines[0].material.name,materialName);
+  assert.equal(created.lines[0].supplierName,supplierName);
+  const next = await send({...body,supplierName:supplierName.toUpperCase(),lines:[{...body.lines[0],materialName:materialName.toUpperCase()}]}).expect(201);
+  const reused = await db.purchaseReceipt.findUniqueOrThrow({where:{id:next.body.id},include:{lines:true}});
+  assert.equal(reused.supplierId,created.supplierId);
+  assert.equal(reused.lines[0].materialId,created.lines[0].materialId);
+  const failedName = `Failed supplier ${randomUUID()}`;
+  await send({...body,supplierName:failedName,lines:[{materialId:randomUUID(),quantity:"100",unit:"kg"}]}).expect(409);
+  assert.equal(await db.supplier.count({where:{name:failedName}}),0);
+});
+
 test("failure in second line rolls back document, first line, stock, audit and receipt", async () => {
   const id = randomUUID();
   const body = receipt();

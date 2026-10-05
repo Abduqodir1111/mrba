@@ -65,6 +65,7 @@ class AmendPurchaseDto {
   @IsOptional() @IsString() @Matches(/^\d{1,12}(?:\.\d{1,6})?$/) unitPricePerKg?: string;
 }
 class PurchaseDto {
+  @IsOptional() @IsString() @Matches(/\S/) @MaxLength(150) supplierName?: string;
   @IsOptional() @IsUUID() supplierId?: string;
   @IsIn(["UZS", "USD"]) currency!: "UZS" | "USD";
   @IsOptional() @IsString() @MaxLength(500) notes?: string;
@@ -169,13 +170,20 @@ export class OperationsService {
             name: "Основной склад",
           },
         });
-        const supplier = dto.supplierId
+        let supplier = dto.supplierId
           ? await tx.supplier.findFirst({
               where: { id: dto.supplierId, isActive: true },
             })
           : null;
         if (dto.supplierId && !supplier)
           throw new ConflictException("Поставщик недоступен");
+        if (!supplier && dto.supplierName?.trim()) {
+          const name = dto.supplierName.trim();
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`supplier:${name.toLocaleLowerCase()}`}, 0))`;
+          supplier = await tx.supplier.findFirst({ where: { name: { equals: name, mode: "insensitive" } } });
+          if (supplier && !supplier.isActive) throw new ConflictException("Поставщик недоступен");
+          if (!supplier) supplier = await tx.supplier.create({ data: { name } });
+        }
         const receipt = await tx.purchaseReceipt.create({
           data: {
             id: randomUUID(),
@@ -202,8 +210,8 @@ export class OperationsService {
           let materialId = row.materialId;
           if (row.materialName) {
             const name = row.materialName.trim();
-            await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`material:${name}`}, 0))`;
-            let material = await tx.material.findUnique({ where: { name } });
+            await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`material:${name.toLocaleLowerCase()}`}, 0))`;
+            let material = await tx.material.findFirst({ where: { name: { equals: name, mode: "insensitive" } } });
             if (!material) {
               material = await tx.material.create({ data: { name } });
               await tx.item.create({

@@ -1,3 +1,5 @@
+import { DateTimeField } from "./date-time-field";
+import { receiptPreview } from "./receipt-preview";
 import { Collapsible } from "./collapsible";
 import {
   KeyboardAwareScrollView,
@@ -203,6 +205,7 @@ type Field = {
   label: string;
   options?: Option[];
   dropdown?: boolean;
+  creatable?: boolean;
   extra?: boolean;
   extraStart?: boolean;
   number?: boolean;
@@ -212,8 +215,9 @@ type Field = {
   value?: string;
   editableComment?: boolean;
 };
-function MaterialDropdown({ options, value, onChange, disabled, label }: {
+export function MaterialDropdown({ options, value, onChange, disabled, label, creatable = false }: {
   options: Option[];
+  creatable?: boolean;
   value?: string;
   onChange: (value: string) => void;
   disabled: boolean;
@@ -221,28 +225,29 @@ function MaterialDropdown({ options, value, onChange, disabled, label }: {
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const selected = options.find((option) => option.id === value);
+  const selected = options.find((option) => option.id === value) ?? (creatable && value?.startsWith("new:") ? { id: value, name: value.slice(4) } : undefined);
   const matches = options.filter((option) =>
     option.name.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()),
   );
   return <View>
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`${label}: ${selected?.name ?? "Выберите сырьё"}`}
-      accessibilityState={{ expanded: open, disabled: disabled || !options.length }}
-      disabled={disabled || !options.length}
+      accessibilityLabel={`${label}: ${selected?.name ?? "Выберите из списка"}`}
+      accessibilityState={{ expanded: open, disabled: disabled || (!creatable && !options.length) }}
+      disabled={disabled || (!creatable && !options.length)}
       onPress={() => { setOpen(!open); setQuery(""); }}
       style={[s.option, { marginBottom: 0, minHeight: 46 }, open && s.optionOn]}
     >
       <Text style={[s.text, { flex: 1, minWidth: 0, color: selected ? c.ink : c.muted }]} numberOfLines={2}>
-        {selected?.name ?? (options.length ? "Выберите сырьё" : "Нет сырья в справочнике")}
+        {selected?.name ?? (options.length || creatable ? "Выберите из списка" : "Введите новое название")}
       </Text>
       <Ionicons name={open ? "chevron-up" : "chevron-down"} size={18} color={c.muted} />
     </Pressable>
     {open && <View style={{ marginTop: 6, borderWidth: 1, borderColor: c.line, borderRadius: 12, overflow: "hidden", backgroundColor: c.white }}>
       <TextInput
-        accessibilityLabel={`Поиск сырья: ${label}`}
-        placeholder="Найти сырьё"
+        accessibilityLabel={`Поиск: ${label}`}
+        placeholder={creatable ? "Найти или ввести новое название" : "Поиск"}
+        maxLength={150}
         value={query}
         onChangeText={setQuery}
         style={[s.input, { margin: 8 }]}
@@ -259,7 +264,10 @@ function MaterialDropdown({ options, value, onChange, disabled, label }: {
           <Text style={[s.text, { flex: 1, minWidth: 0 }]}>{option.name}</Text>
           {value === option.id && <Ionicons name="checkmark" size={18} color={c.blue} />}
         </Pressable>)}
-        {!matches.length && <Text style={[s.muted, { padding: 14 }]}>Ничего не найдено</Text>}
+        {creatable && query.trim().length > 0 && !options.some(o => o.name.trim().toLocaleLowerCase() === query.trim().toLocaleLowerCase()) && <Pressable accessibilityRole="button" onPress={() => { onChange(`new:${query.trim()}`); setOpen(false); setQuery(""); }} style={[s.option, { margin: 8 }]}>
+          <Text style={s.text}>Добавить «{query.trim()}»</Text>
+        </Pressable>}
+        {!matches.length && !creatable && <Text style={[s.muted, { padding: 14 }]}>Ничего не найдено</Text>}
       </ScrollView>
     </View>}
   </View>;
@@ -275,6 +283,7 @@ type Form = {
   allowHandover?: boolean;
   loadingSummary?: boolean;
   saleStock?: Record<string, string>;
+  receiptSummary?: { materialName: string; grossKg: string; minimumReturn: string; priceRequired: boolean };
   allowDraft?: boolean;
   submit: (values: Record<string, string>, send: typeof mutate) => Promise<any>;
 };
@@ -440,9 +449,12 @@ function Editor({
       !salePrice?.gt(0) ||
       !saleAvailable ||
       saleQuantity.gt(saleAvailable));
+  const receiptTotals = form.receiptSummary ? receiptPreview(form.receiptSummary.grossKg, form.receiptSummary.minimumReturn, values, form.receiptSummary.priceRequired) : null;
+  const invalidReceipt = !!form.receiptSummary && !receiptTotals;
   const save = async (draft = false) => {
     setError("");
     try {
+      if (invalidReceipt) throw Error("Проверьте возврат, скидки и цену. Возврат нельзя уменьшать, а скидки не должны превышать принятый вес.");
       if (invalidSale)
         throw Error(
           "Проверьте покупателя, количество и цену. Продажа не должна превышать доступный остаток.",
@@ -543,6 +555,10 @@ function Editor({
               keyboardShouldPersistTaps="handled"
               contentContainerStyle={{ padding: 16, paddingBottom: 24 }}
             >
+              {form.receiptSummary && <View style={{ padding: 14, backgroundColor: c.softBlue, borderRadius: 14, marginBottom: 16 }}>
+                <Text style={s.muted}>Сырьё</Text>
+                <Row label={form.receiptSummary.materialName} value={`${fmt(form.receiptSummary.grossKg)} кг`} />
+              </View>}
               {form.subtitle && (
                 <Text style={[s.muted, { marginBottom: 20 }]}>
                   {form.subtitle}
@@ -585,7 +601,7 @@ function Editor({
                     {f.weight ? ` · ${weightUnit === "kg" ? "кг" : "т"}` : ""}
                   </Text>
                   {f.options && f.dropdown ? (
-                    <MaterialDropdown options={f.options} value={values[f.key] ?? ""} label={f.label} disabled={busy} onChange={(value) => setValues((previous) => ({ ...previous, [f.key]: value }))} />
+                    <MaterialDropdown creatable={f.creatable} options={f.options} value={values[f.key] ?? ""} label={f.label} disabled={busy} onChange={(value) => setValues((previous) => ({ ...previous, [f.key]: value }))} />
                   ) : f.options ? (
                     <View style={s.options}>
                       {!f.options.length ? (
@@ -894,6 +910,15 @@ function Editor({
                   </View>
                 </View>
               )}
+              {form.receiptSummary && <View style={{ padding: 14, backgroundColor: c.softBlue, borderRadius: 14, marginTop: 12 }}>
+                <Row label="Вес к оплате" value={receiptTotals ? `${fmt(receiptTotals.payable)} кг` : "—"} />
+                <Row label="К оплате" value={receiptTotals?.amount != null ? `${fmt(receiptTotals.amount)} ${values.currency}` : receiptTotals ? "Укажите цену" : "—"} />
+                <Row label="Склад · без скидки" value={receiptTotals ? `${fmt(receiptTotals.payable)} кг` : "—"} />
+                <Row label="Склад · со скидкой" value={receiptTotals ? `${fmt(receiptTotals.discounted)} кг` : "—"} />
+                <Row label="Всего по приходу" value={receiptTotals ? `${fmt(receiptTotals.total)} кг` : "—"} />
+                <Text style={s.muted}>Вес по этому приходу, без учёта последующего расхода. Скидка в процентах применяется после скидки в кг.</Text>
+                {invalidReceipt && <Text style={s.error}>Проверьте возврат, скидки и цену. Уже оформленный возврат нельзя уменьшить.</Text>}
+              </View>}
               {form.repeat && (
                 <View>
                   <Btn
@@ -919,7 +944,7 @@ function Editor({
               <View style={{ flex: 1 }}>
                 <Btn
                   title={busy ? "Сохранение…" : actionLabel}
-                  disabled={busy || invalidCompletionWeight || invalidSale}
+                  disabled={busy || invalidCompletionWeight || invalidSale || invalidReceipt}
                   onPress={() => void save()}
                 />
               </View>
@@ -947,16 +972,15 @@ function ReceiptHistory({ lines, search, edit }: { lines: any[]; search: string;
     if (line.status !== "POSTED") return;
     edit({
         title: `Дополнить приход №${line.number}`,
-        subtitle: `${line.material.name} · получено ${fmt(line.grossKg)} кг. Возврат — общий вес, возвращённый через этот приход. Сумма рассчитывается по цене и скидкам. Стоимость связанных плавок пересчитается.`,
+        receiptSummary: { materialName: line.material.name, grossKg: line.grossKg, minimumReturn: line.returnedKg, priceRequired: line.priceKnown },
         fields: [
-          { key: "supplierName", label: "Кто дал сырьё", required: false, value: line.supplierName ?? "" },
-          { key: "returnedKg", label: "Всего возврат по приходу, кг", number: true, value: line.returnedKg },
-          { key: "discountKg", label: "Скидка, кг (вручную)", number: true, value: line.discountKg },
-          { key: "discountPercent", label: "Дополнительная скидка, %", number: true, value: line.discountPercent },
+          { key: "returnedKg", label: "Возврат, кг", number: true, value: line.returnedKg },
+          { key: "discountKg", label: "Скидка, кг", number: true, value: line.discountKg },
+          { key: "discountPercent", label: "Скидка, %", number: true, value: line.discountPercent },
           { ...currencies, value: line.currency },
           { key: "unitPricePerKg", label: "Цена за кг", number: true, required: line.priceKnown, value: line.priceKnown ? line.unitPricePerKg : "" },
         ],
-        submit: (v, send) => send(`/purchase-lines/${line.id}/amend`, { ...v, version: line.version, unitPricePerKg: v.unitPricePerKg?.trim() || undefined }),
+        submit: (v, send) => send(`/purchase-lines/${line.id}/amend`, { ...v, supplierName: line.supplierName ?? undefined, version: line.version, unitPricePerKg: v.unitPricePerKg?.trim() || undefined }),
     });
   };
   const header = (group: any[]) => {
@@ -1069,6 +1093,14 @@ export function Workspace({
   const [salesView, setSalesView] = useState<"sale" | "report">("sale");
   const [inventoryView, setInventoryView] = useState<"stock" | "history">("stock");
   const [stockWarehouse, setStockWarehouse] = useState("Основной склад");
+  const [stockFrom, setStockFrom] = useState("");
+  const [stockTo, setStockTo] = useState("");
+  const [stockPeriod, setStockPeriod] = useState<{from:number;to:number}>({from:-Infinity,to:Infinity});
+  const [stockPeriodError, setStockPeriodError] = useState("");
+  const [stockFiltersOpen, setStockFiltersOpen] = useState(false);
+  const [stockFilterDraft, setStockFilterDraft] = useState({from:"",to:"",supplier:"",material:""});
+  const [stockSupplier, setStockSupplier] = useState("");
+  const [stockMaterial, setStockMaterial] = useState("");
   const [stockDetails, setStockDetails] = useState<string | null>(null);
   const [massUnit, setMassUnit] = useState<"kg" | "t">("kg");
   const mass = (value: any) =>
@@ -1148,8 +1180,26 @@ export function Workspace({
     rows(key).filter((r) =>
       JSON.stringify(r).toLowerCase().includes(search.toLowerCase()),
     );
+  const receiptByLine = new Map(rows("purchase-lines").map(line => [line.id, line]));
+  const supplierOf = (row: any) => receiptByLine.get(row.lot.purchaseLot?.line.id)?.supplierName ?? row.lot.purchaseLot?.line.supplierName ?? "";
+  const periodStock = rows("stock").filter(row => {
+    const posted = receiptByLine.get(row.lot.purchaseLot?.line.id)?.postedAt ?? row.lot.createdAt;
+    const time = new Date(posted).getTime();
+    return time >= stockPeriod.from && time <= stockPeriod.to;
+  });
+  const filterStock = rows("stock");
+  const receiptItemId = (line: any) => line.lot?.stockLot?.itemId ?? rows("items").find(item => item.materialId === line.materialId)?.id;
+  const stockSupplierOptions = [...new Set([...filterStock.map(supplierOf), ...rows("purchase-lines").map(line => line.supplierName)].filter(Boolean))].sort().map(name => ({id:name,name}));
+  const stockMaterialOptions = [...new Map([...filterStock.map(row => [row.lot.itemId, {id:row.lot.itemId,name:row.lot.item.name}] as const), ...rows("purchase-lines").filter(line => receiptItemId(line)).map(line => [receiptItemId(line), {id:receiptItemId(line),name:line.material.name}] as const)]).values()];
+  const visibleReceiptLines = rows("purchase-lines").filter(line => {
+    const time = new Date(line.postedAt).getTime();
+    return time >= stockPeriod.from && time <= stockPeriod.to
+      && (!stockSupplier || line.supplierName === stockSupplier)
+      && (!stockMaterial || receiptItemId(line) === stockMaterial);
+  });
+  const visibleStock = periodStock.filter(row => (!stockSupplier || supplierOf(row) === stockSupplier) && (!stockMaterial || row.lot.itemId === stockMaterial));
   const groupedStock = Array.from(
-    rows("stock")
+    (section === "inventory" ? visibleStock : rows("stock"))
       .reduce((groups: Map<string, any>, r: any) => {
         const key = `${r.lot.itemId}:${r.locationId}:${stockKind(r)}`;
         const group = groups.get(key) ?? {
@@ -1293,6 +1343,14 @@ export function Workspace({
               placeholder="Поиск"
               placeholderTextColor={c.muted}
             />
+            {section === "inventory" && <Pressable
+              accessibilityRole="button" accessibilityLabel="Фильтры склада"
+              accessibilityState={{ expanded: stockFiltersOpen }}
+              onPress={() => { setStockFilterDraft({from:stockFrom,to:stockTo,supplier:stockSupplier,material:stockMaterial}); setStockPeriodError(""); setStockFiltersOpen(true); }}
+              style={{ width:44,height:44,borderRadius:12,alignItems:"center",justifyContent:"center",backgroundColor:stockFrom || stockTo || stockSupplier || stockMaterial ? c.softBlue : c.white }}>
+              <Ionicons name="options-outline" size={22} color={c.blue} />
+              {!!(stockFrom || stockTo || stockSupplier || stockMaterial) && <View style={{position:"absolute",right:6,top:6,width:7,height:7,borderRadius:4,backgroundColor:c.blue}} />}
+            </Pressable>}
             <Pressable
               accessibilityLabel="Обновить раздел"
               onPress={() => void load()}
@@ -1581,8 +1639,48 @@ export function Workspace({
             <Text style={[s.productionTabText, { color: inventoryView === value ? c.white : c.muted }]}>{title}</Text>
           </Pressable>)}
         </View>
-        {inventoryView === "history" && <ReceiptHistory lines={rows("purchase-lines")} search={search} edit={setForm} />}
+        {inventoryView === "history" && <ReceiptHistory key={`${stockFrom}|${stockTo}|${stockSupplier}|${stockMaterial}`} lines={visibleReceiptLines} search={search} edit={setForm} />}
       </>}
+          {section === "inventory" && stockFiltersOpen && <Modal transparent animationType="fade" onRequestClose={() => setStockFiltersOpen(false)}>
+            <KeyboardProvider>
+              <View style={{flex:1,backgroundColor:"rgba(15,30,45,0.35)",justifyContent:"center",padding:16}}>
+                <View style={{width:"100%",maxWidth:480,maxHeight:"90%",alignSelf:"center",backgroundColor:c.white,borderRadius:22,overflow:"hidden"}}>
+                  <View style={s.modalHead}>
+                    <Text style={s.section}>Фильтры склада</Text>
+                    <Pressable accessibilityRole="button" accessibilityLabel="Закрыть фильтры" onPress={() => setStockFiltersOpen(false)} style={s.modalClose}><Ionicons name="close" size={20} color={c.ink} /></Pressable>
+                  </View>
+                  <KeyboardAwareScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{padding:16}}>
+                    <Text style={s.label}>Период поступления · время Ташкента</Text>
+                    <Text style={s.muted}>С даты и времени</Text>
+                    <DateTimeField label="С даты и времени" value={stockFilterDraft.from} onChange={from => setStockFilterDraft(d => ({...d,from}))} />
+                    <Text style={[s.muted,{marginTop:10}]}>По дату и время включительно</Text>
+                    <DateTimeField label="По дату и время" value={stockFilterDraft.to} onChange={to => setStockFilterDraft(d => ({...d,to}))} />
+                    <Text style={[s.label,{marginTop:12}]}>Поставщик</Text>
+                    <MaterialDropdown label="Поставщик" disabled={false} options={[{id:"",name:"Все поставщики"},...stockSupplierOptions]} value={stockFilterDraft.supplier} onChange={supplier => setStockFilterDraft(d => ({...d,supplier}))} />
+                    <Text style={[s.label,{marginTop:12}]}>Сырьё / материал</Text>
+                    <MaterialDropdown label="Сырьё / материал" disabled={false} options={[{id:"",name:"Все материалы"},...stockMaterialOptions]} value={stockFilterDraft.material} onChange={material => setStockFilterDraft(d => ({...d,material}))} />
+                    <Text style={[s.muted,{marginTop:10}]}>Общие условия для остатков и истории приходов. Период — по дате поступления.</Text>
+                    {!!stockPeriodError && <Text accessibilityRole="alert" style={s.error}>{stockPeriodError}</Text>}
+                  </KeyboardAwareScrollView>
+                  <View style={{padding:16,borderTopWidth:1,borderColor:c.line}}>
+                    <Btn title="Применить фильтры" onPress={() => {
+              const parse = (value: string, fallback: number) => {
+                if (!value) return fallback;
+                if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value)) return NaN;
+                const time = Date.parse(`${value}:00+05:00`);
+                return Number.isFinite(time) && new Date(time + 5 * 3600000).toISOString().slice(0,16) === value ? time : NaN;
+              };
+              const from = parse(stockFilterDraft.from, -Infinity), to = parse(stockFilterDraft.to, Infinity) + (stockFilterDraft.to ? 59999 : 0);
+              if (Number.isNaN(from) || Number.isNaN(to) || from > to) { setStockPeriodError("Проверьте даты: начало должно быть раньше конца периода."); return; }
+              setStockPeriod({from,to}); setStockFrom(stockFilterDraft.from); setStockTo(stockFilterDraft.to); setStockSupplier(stockFilterDraft.supplier); setStockMaterial(stockFilterDraft.material); setStockPeriodError(""); setStockFiltersOpen(false);
+
+                    }} />
+                    <Btn secondary title="Сбросить фильтры" onPress={() => { setStockFrom("");setStockTo("");setStockPeriod({from:-Infinity,to:Infinity});setStockSupplier("");setStockMaterial("");setStockPeriodError("");setStockFiltersOpen(false); }} />
+                  </View>
+                </View>
+              </View>
+            </KeyboardProvider>
+          </Modal>}
       {section === "inventory" && inventoryView === "stock" && (
         <>
           <View style={s.chips}>
@@ -1603,6 +1701,7 @@ export function Workspace({
             ))}
           </View>
 
+          {!visibleStock.some(row => row.location.name === stockWarehouse) && <Empty text="За выбранный период с этими фильтрами остатков нет." />}
           <Btn
             secondary
             title="Принять несколько позиций"
@@ -1611,7 +1710,7 @@ export function Workspace({
                 title: "Приход сырья",
                 allowDraft: true,
                 fields: [
-                  { key: "supplierName", label: "Кто дал сырьё", required: false },
+                  { key: "supplierName", label: "Кто дал сырьё", required: false, dropdown: true, creatable: true, options: [...new Set([...rows("suppliers").map(x => x.name), ...rows("purchase-lines").map(x => x.supplierName).filter(Boolean)])].map(name => ({ id: name, name })) },
                   { ...currencies, value: "UZS", extra: true, extraStart: true },
                   { key: "notes", label: "Комментарий", required: false },
                 ],
@@ -1625,6 +1724,7 @@ export function Workspace({
                         options(rows("items").filter((i) => i.kind === "MATERIAL" && i.isActive)),
                       ),
                       dropdown: true,
+                      creatable: true,
                     },
                     weight("quantity", "Получено до возврата"),
                     { extra: true, extraStart: true, key: "returnedKg", label: "Возврат при приёмке, кг", number: true, required: false, value: "0" },
@@ -1649,10 +1749,12 @@ export function Workspace({
                 submit: (v, send) =>
                   send("/purchase-receipts", {
                     currency: v.currency,
+                    supplierName: v.supplierName?.replace(/^new:/, "").trim() || undefined,
                     notes: v.notes,
                     lines: formRows(v).map((l) => ({
                       ...l,
-                      supplierName: v.supplierName?.trim() || undefined,
+                      ...(l.materialId?.startsWith("new:") ? { materialId: undefined, materialName: l.materialId.slice(4) } : {}),
+                      supplierName: v.supplierName?.replace(/^new:/, "").trim() || undefined,
                       unitPricePerKg: l.unitPricePerKg?.trim() || undefined,
                       returnedKg: new Decimal(l.returnedKg || "0").toFixed(),
                       discountPercent: new Decimal(l.discountPercent || "0").toFixed(),

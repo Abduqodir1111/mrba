@@ -2,7 +2,7 @@ import {
   KeyboardAwareScrollView,
   KeyboardProvider,
 } from "./src/keyboard-layout";
-import { Workspace, Reports, CatalogActions, LeadAgent } from "./src/features";
+import { Workspace, Reports, CatalogActions, LeadAgent, MaterialDropdown } from "./src/features";
 import Decimal from "decimal.js";
 import React, { useEffect, useState } from "react";
 import {
@@ -843,7 +843,8 @@ function EntryModal({
   onAmbiguous: () => void;
 }) {
   const [name, setName] = useState("");
-  const [material, setMaterial] = useState(materials.length ? "" : "new");
+  const [material, setMaterial] = useState("");
+  const [supplierName, setSupplierName] = useState("");
   const [quantity, setQuantity] = useState("");
   const [price, setPrice] = useState("");
   const [discountKg, setDiscountKg] = useState("");
@@ -906,10 +907,11 @@ function EntryModal({
         kind === "purchase"
           ? {
               currency,
+              supplierName: supplierName.replace(/^new:/, "").trim() || undefined,
               lines: [
                 {
-                  ...(material === "new"
-                    ? { materialName: name.trim() }
+                  ...(material.startsWith("new:")
+                    ? { materialName: material.slice(4) }
                     : { materialId: material }),
                   quantity: quantity.replace(",", "."),
                   unit,
@@ -940,7 +942,7 @@ function EntryModal({
     if (kind !== "purchase") return void save();
     confirmAction({
       title: "Подтвердить поступление?",
-      message: `${material === "new" ? name.trim() : materials.find((m) => m.id === material)?.name}\n${quantity} ${unit === "t" ? "т" : "кг"}\nЦена: ${price} ${currency}/кг\nСкидка: ${discountKg || "0"} кг\nК оплате: ${receiptPreview?.amount.toString() ?? "—"} ${currency}\nВозврат при приёмке: ${returnedKg || "0"} кг. Доп. скидка: ${discountPercent || "0"}%. На склад: ${receiptPreview?.received.toString() ?? "—"} кг.`,
+      message: `${material.startsWith("new:") ? material.slice(4) : materials.find((m) => m.id === material)?.name}\n${quantity} ${unit === "t" ? "т" : "кг"}\nЦена: ${price} ${currency}/кг\nСкидка: ${discountKg || "0"} кг\nК оплате: ${receiptPreview?.amount.toString() ?? "—"} ${currency}\nВозврат при приёмке: ${returnedKg || "0"} кг. Доп. скидка: ${discountPercent || "0"}%. На склад: ${receiptPreview?.received.toString() ?? "—"} кг.`,
       confirmText: "Принять сырьё",
       onConfirm: () => save(),
     });
@@ -984,23 +986,10 @@ function EntryModal({
                 />
               ) : (
                 <>
-                  <Choices
-                    label="Сырьё"
-                    items={[
-                      ...materials.map((x) => ({ value: x.id, label: x.name })),
-                      { value: "new", label: "+ Новый вид сырья" },
-                    ]}
-                    selected={material}
-                    onSelect={setMaterial}
-                  />
-                  {material === "new" && (
-                    <Field
-                      label="Название сырья"
-                      placeholder="Например, медный лом"
-                      value={name}
-                      onChangeText={setName}
-                    />
-                  )}
+                  <Text style={s.label}>Кто дал сырьё</Text>
+                  <MaterialDropdown label="Кто дал сырьё" options={suppliers.map(x=>({id:x.name,name:x.name}))} value={supplierName} onChange={setSupplierName} disabled={busy} creatable />
+                  <Text style={[s.label,{marginTop:14}]}>Сырьё</Text>
+                  <MaterialDropdown label="Сырьё" options={materials.map(x=>({id:x.id,name:x.name}))} value={material} onChange={setMaterial} disabled={busy} creatable />
                   <Choices
                     label="Единица веса"
                     items={[
@@ -1089,7 +1078,7 @@ function EntryModal({
                 disabled={
                   kind === "purchase"
                     ? !material ||
-                      (material === "new" && !name.trim()) ||
+                      (material.startsWith("new:") && !material.slice(4).trim()) ||
                       !receiptPreview
                     : !name.trim()
                 }
