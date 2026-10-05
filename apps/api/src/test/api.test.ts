@@ -124,11 +124,30 @@ test("parallel retries have one atomic stock effect and one audit event", async 
     .send({ ...body, currency: "UZS" })
     .expect(409);
 });
+test("receipt numbers are consecutive across parallel multi-receipts and stable on replay", async () => {
+  const before = (await db.purchaseNumberCounter.findUniqueOrThrow({ where: { id: 1 } })).lastNumber;
+  const ids = [randomUUID(), randomUUID(), randomUUID()];
+  const body = receipt();
+  body.lines.push({ ...body.lines[0] });
+  const results = await Promise.all(ids.map(id => request(app.getHttpServer())
+    .post("/api/v1/purchase-receipts").set(headers()).set("Idempotency-Key", id).send(body).expect(201)));
+  const receiptIds = results.map(r => r.body.id);
+  const receipts = await db.purchaseReceipt.findMany({ where: { id: { in: receiptIds } }, orderBy: { number: "asc" }, include: { lines: true } });
+  assert.deepEqual(receipts.map(r => r.number), Array.from({ length: 3 }, (_, i) => before + i + 1));
+  assert.ok(receipts.every(r => r.lines.length === 2));
+  await request(app.getHttpServer()).post("/api/v1/purchase-receipts")
+    .set(headers()).set("Idempotency-Key", ids[0]).send(body).expect(201);
+  assert.equal((await db.purchaseNumberCounter.findUniqueOrThrow({ where: { id: 1 } })).lastNumber, before + 3);
+  const history = await request(app.getHttpServer()).get("/api/v1/purchase-lines?limit=6").set(headers()).expect(200);
+  assert.deepEqual(history.body.items.map((l: any) => l.number), receipts.flatMap(r => [r.number, r.number]).reverse());
+});
+
 test("failure in second line rolls back document, first line, stock, audit and receipt", async () => {
   const id = randomUUID();
   const body = receipt();
   body.lines.push({ ...body.lines[0], materialId: randomUUID() });
   const before = await db.purchaseReceipt.count();
+  const numberBefore = await db.purchaseNumberCounter.findUniqueOrThrow({ where: { id: 1 } });
   await request(app.getHttpServer())
     .post("/api/v1/purchase-receipts")
     .set(headers())
@@ -136,6 +155,7 @@ test("failure in second line rolls back document, first line, stock, audit and r
     .send(body)
     .expect(409);
   assert.equal(await db.purchaseReceipt.count(), before);
+  assert.deepEqual(await db.purchaseNumberCounter.findUniqueOrThrow({ where: { id: 1 } }), numberBefore);
   assert.equal(await db.commandReceipt.count({ where: { commandId: id } }), 0);
   assert.equal(await db.stockMovement.count({ where: { commandId: id } }), 0);
 });

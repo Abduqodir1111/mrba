@@ -1468,6 +1468,7 @@ test("unpriced multi-receipts can be completed later without rewriting history o
   assert.equal(lines.length, 2);
   assert.equal(lines[0].priceKnown, false);
   const line = lines[0], lotId = line.lot!.id;
+  const receiptNumber = (await db.purchaseReceipt.findUniqueOrThrow({ where: { id: line.receiptId } })).number;
   const { Costing } = await import("../costing");
   assert.equal((await new Costing(db).unit(lotId)).known, false);
   const edit = { version: 0, supplierName: "Supplier Corrected", returnedKg: "500", discountKg: "300", discountPercent: "10", unitPricePerKg: "100", currency: "UZS" };
@@ -1475,6 +1476,7 @@ test("unpriced multi-receipts can be completed later without rewriting history o
   const result = (await post(`/purchase-lines/${line.id}/amend`, edit, key)).body;
   assert.equal(result.amount, "828000");
   assert.equal((await post(`/purchase-lines/${line.id}/amend`, edit, key)).body.id, result.id);
+  assert.equal((await db.purchaseReceipt.findUniqueOrThrow({ where: { id: line.receiptId } })).number, receiptNumber);
   const balance = () => db.inventoryBalance.findUniqueOrThrow({ where: { lotId_locationId: { lotId, locationId: location } } });
   assert.equal((await balance()).onHandKg.toString(), "9500");
   assert.equal(await db.stockMovement.count({ where: { commandId: key } }), 1);

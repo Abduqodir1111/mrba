@@ -130,6 +130,7 @@ model Supplier {
   documents BusinessDocument[]
 }
 model PurchaseReceipt {
+  number Int @unique @default(dbgenerated("next_purchase_receipt_number()"))
   id String @id @db.Uuid
   siteId String @db.Uuid
   site Site @relation(fields: [siteId], references: [id], onDelete: Restrict)
@@ -141,6 +142,10 @@ model PurchaseReceipt {
   postedAt DateTime @default(now()) @db.Timestamptz
   notes String?
   lines PurchaseLine[]
+}
+model PurchaseNumberCounter {
+  id Int @id
+  lastNumber Int
 }
 model PurchaseLine {
   supplierName String?

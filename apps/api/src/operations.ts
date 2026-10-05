@@ -447,12 +447,12 @@ export class OperationsController {
   }
   @Get("purchase-lines") @Allow("inventory.read") async purchaseHistory(@Query() q: PageQuery) {
     const result = await page(this.db.purchaseLine, {
-      orderBy: { receipt: { postedAt: "desc" } },
+      orderBy: { receipt: { number: "desc" } },
       include: { material: true, receipt: { include: { supplier: true } }, revisions: revisionInclude,
         lot: { include: { stockLot: { include: { originDocument: true } } } } },
     }, q);
     return { ...result, items: result.items.map((line: any) => ({
-      ...effectivePurchase(line), currency: line.revisions[0]?.currency ?? line.receipt.currency,
+      ...effectivePurchase(line), number: line.receipt.number, currency: line.revisions[0]?.currency ?? line.receipt.currency,
       supplierName: line.revisions.length ? line.revisions[0].supplierName : (line.supplierName ?? line.receipt.supplier?.name),
       grossKg: line.quantityKg.plus(line.returnedKg).toString(),
       status: line.lot?.stockLot?.originDocument.status,

@@ -931,22 +931,22 @@ function Editor({
   );
 }
 function ReceiptHistory({ lines, search, edit }: { lines: any[]; search: string; edit: (form: Form) => void }) {
-  const matching = lines.filter((line) => `${line.id} ${line.material.name} ${line.supplierName ?? ""}`.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
-  return <>
-    {!matching.length && <Empty text="Приходов пока нет или ничего не найдено." />}
-    {matching.map((line) => <Card key={line.id}>
-      <Text style={s.section}>{line.material.name}</Text>
-      <Row label={date(line.postedAt)} value={line.status === "POSTED" ? "Принято" : "Отменено"} />
-      <Row label="Кто дал сырьё" value={line.supplierName || "Не указан"} />
-      <Row label="Получено" value={`${fmt(line.grossKg)} кг`} />
-      {new Decimal(line.returnedKg).gt(0) && <Row label="Возврат по приходу" value={`${fmt(line.returnedKg)} кг`} />}
-      <Row label="Принято после возврата" value={`${fmt(line.quantityKg)} кг`} />
-      {new Decimal(line.discountKg).plus(line.percentDiscountKg).gt(0) && <Row label={`Скидки · ${fmt(line.discountPercent)}% + кг`} value={`${fmt(new Decimal(line.discountKg).plus(line.percentDiscountKg))} кг`} />}
-      <Row label="Вес после скидок · к оплате" value={`${fmt(new Decimal(line.quantityKg).minus(line.discountKg).minus(line.percentDiscountKg))} кг`} />
-      <Row label="Цена за кг" value={line.priceKnown ? `${fmt(line.unitPricePerKg)} ${line.currency}` : "Указать позже"} />
-      <Row label="К оплате" value={line.priceKnown ? `${fmt(line.amount)} ${line.currency}` : "Цена пока не указана"} />
-      {line.status === "POSTED" && <Btn secondary title="Дополнить / изменить приход" onPress={() => edit({
-        title: "Дополнить приход",
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const groups = new Map<string, any[]>();
+  for (const line of lines) {
+    const group = groups.get(line.receiptId) ?? [];
+    group.push(line);
+    groups.set(line.receiptId, group);
+  }
+  const query = search.trim().toLocaleLowerCase();
+  const matching = [...groups.values()].filter(group => group.some(line =>
+    `Приход №${line.number} ${line.material.name} ${line.supplierName ?? ""}`.toLocaleLowerCase().includes(query)
+  )).sort((a, b) => b[0].number - a[0].number);
+  const selected = selectedId ? groups.get(selectedId) : undefined;
+  const openMaterial = (line: any) => {
+    if (line.status !== "POSTED") return;
+    edit({
+        title: `Дополнить приход №${line.number}`,
         subtitle: `${line.material.name} · получено ${fmt(line.grossKg)} кг. Возврат — общий вес, возвращённый через этот приход. Сумма рассчитывается по цене и скидкам. Стоимость связанных плавок пересчитается.`,
         fields: [
           { key: "supplierName", label: "Кто дал сырьё", required: false, value: line.supplierName ?? "" },
@@ -957,8 +957,64 @@ function ReceiptHistory({ lines, search, edit }: { lines: any[]; search: string;
           { key: "unitPricePerKg", label: "Цена за кг", number: true, required: line.priceKnown, value: line.priceKnown ? line.unitPricePerKg : "" },
         ],
         submit: (v, send) => send(`/purchase-lines/${line.id}/amend`, { ...v, version: line.version, unitPricePerKg: v.unitPricePerKg?.trim() || undefined }),
-      })} />}
-    </Card>)}
+    });
+  };
+  const header = (group: any[]) => {
+    const receipt = group[0];
+    const names = [...new Set(group.map(line => line.supplierName || "Поставщик не указан"))];
+    const timestamp = new Date(receipt.postedAt);
+    return <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 12 }}>
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <Text style={[s.section, { marginTop: 0, fontWeight: "700" }]}>{names.join(" · ")}</Text>
+        <Text style={s.muted}>Приход №{receipt.number}{receipt.status === "POSTED" ? "" : " · Отменено"}</Text>
+      </View>
+      <View style={{ alignItems: "flex-end", gap: 4 }}>
+        <Text style={[s.value, { fontWeight: "700" }]}>{timestamp.toLocaleDateString("ru-RU", { timeZone: "Asia/Tashkent" })}</Text>
+        <Text style={[s.value, { fontWeight: "700" }]}>{timestamp.toLocaleTimeString("ru-RU", { timeZone: "Asia/Tashkent", hour: "2-digit", minute: "2-digit" })}</Text>
+      </View>
+    </View>;
+  };
+  const total = (group: any[]) => fmt(group.reduce((sum, line) => sum.plus(line.grossKg), new Decimal(0)));
+  if (selected) return <>
+    <Btn secondary title="Назад к приходам" onPress={() => setSelectedId(null)} />
+    <Card>
+      {header(selected)}
+      <View style={{ marginTop: 12, borderTopWidth: 1, borderTopColor: c.line }}>
+        {selected.map(line => <Pressable key={line.id} accessibilityRole="button"
+          accessibilityLabel={`${line.material.name}, ${fmt(line.grossKg)} кг, редактировать`}
+          accessibilityState={{ disabled: line.status !== "POSTED" }} disabled={line.status !== "POSTED"}
+          onPress={() => openMaterial(line)}
+          style={{ flexDirection: "row", alignItems: "center", gap: 10, minHeight: 52, paddingVertical: 12 }}>
+          <Text style={[s.text, { flex: 1, minWidth: 0 }]}>{line.material.name}</Text>
+          <Text style={[s.value, { fontWeight: "700", flexShrink: 1, textAlign: "right" }]}>{fmt(line.grossKg)} кг</Text>
+          {line.status === "POSTED" && <Ionicons name="chevron-forward" size={16} color={c.muted} />}
+        </Pressable>)}
+      </View>
+      <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 12, borderTopWidth: 1, borderTopColor: c.line, paddingTop: 12 }}>
+        <Text style={[s.value, { fontWeight: "700" }]}>Итого</Text>
+        <Text style={[s.value, { fontWeight: "700", flexShrink: 1, textAlign: "right" }]}>{total(selected)} кг</Text>
+      </View>
+    </Card>
+  </>;
+  return <>
+    {!matching.length && <Empty text="Приходов пока нет или ничего не найдено." />}
+    {matching.map(group => <Pressable key={group[0].receiptId} accessibilityRole="button"
+      accessibilityLabel={`Открыть приход №${group[0].number}`} onPress={() => setSelectedId(group[0].receiptId)}>
+      <Card>
+        {header(group)}
+        <View style={{ marginTop: 12, paddingVertical: 4, borderTopWidth: 1, borderTopColor: c.line }}>
+          {group.map(line => <View key={line.id} style={{ flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 9 }}>
+            <Text style={[s.text, { flex: 1, minWidth: 0 }]}>{line.material.name}</Text>
+            <Text style={[s.value, { fontWeight: "700", flexShrink: 1, textAlign: "right" }]}>{fmt(line.grossKg)} кг</Text>
+          </View>)}
+        </View>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingTop: 12, borderTopWidth: 1, borderTopColor: c.line }}>
+          <Text style={[s.value, { flex: 1, fontWeight: "700" }]}>Итого</Text>
+          <Text style={[s.value, { fontWeight: "700", flexShrink: 1 }]}>{total(group)} кг</Text>
+          <Ionicons name="chevron-forward" size={17} color={c.blue} />
+        </View>
+      </Card>
+    </Pressable>)}
   </>;
 }
 const formRows = (v: Record<string, string>) =>
@@ -1555,6 +1611,7 @@ export function Workspace({
                 title: "Приход сырья",
                 allowDraft: true,
                 fields: [
+                  { key: "supplierName", label: "Кто дал сырьё", required: false },
                   { ...currencies, value: "UZS", extra: true, extraStart: true },
                   { key: "notes", label: "Комментарий", required: false },
                 ],
@@ -1570,7 +1627,6 @@ export function Workspace({
                       dropdown: true,
                     },
                     weight("quantity", "Получено до возврата"),
-                    { key: "supplierName", label: "Кто дал сырьё", required: false },
                     { extra: true, extraStart: true, key: "returnedKg", label: "Возврат при приёмке, кг", number: true, required: false, value: "0" },
                     { extra: true, key: "discountPercent", label: "Дополнительная скидка, %", number: true, required: false, value: "0" },
                     {
@@ -1596,7 +1652,7 @@ export function Workspace({
                     notes: v.notes,
                     lines: formRows(v).map((l) => ({
                       ...l,
-                      supplierName: l.supplierName?.trim() || undefined,
+                      supplierName: v.supplierName?.trim() || undefined,
                       unitPricePerKg: l.unitPricePerKg?.trim() || undefined,
                       returnedKg: new Decimal(l.returnedKg || "0").toFixed(),
                       discountPercent: new Decimal(l.discountPercent || "0").toFixed(),
