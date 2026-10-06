@@ -39,3 +39,20 @@ test("weighted price uses payable kilograms and keeps different percentages dist
   assert.equal(group.amount.div(group.pricedKg).toDecimalPlaces(2).toString(), "64310.34");
   assert.equal(group.percentages.size, 2);
 });
+
+test("client example uses weighted payable price, not average of purchase prices", () => {
+  const [group] = receiptSummary([
+    line({grossKg:"3000",returnedKg:"0",discountKg:"0",percentDiscountKg:"0",discountPercent:"0",amount:"60000000"}),
+    line({grossKg:"2000",returnedKg:"0",discountKg:"0",percentDiscountKg:"0",discountPercent:"0",amount:"42000000"}),
+  ]);
+  assert.equal(group.amount.toString(), "102000000");
+  assert.equal(group.payable.toString(), "5000");
+  assert.equal(group.amount.div(group.pricedKg).toString(), "20400");
+});
+
+test("fully discounted receipt has physical stock but no payable weight", () => {
+  const [group] = receiptSummary([line({grossKg:"100",returnedKg:"0",discountKg:"100",percentDiscountKg:"0",discountPercent:"0",amount:"0"})]);
+  assert.equal(group.total.toString(), "100");
+  assert.equal(group.payable.toString(), "0");
+  assert.equal(group.pricedKg.toString(), "0");
+});

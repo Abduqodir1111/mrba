@@ -130,6 +130,7 @@ model Supplier {
   documents BusinessDocument[]
 }
 model PurchaseReceipt {
+  deliveredBy String?
   number Int @unique @default(dbgenerated("next_purchase_receipt_number()"))
   id String @id @db.Uuid
   siteId String @db.Uuid

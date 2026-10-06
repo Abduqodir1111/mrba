@@ -65,6 +65,7 @@ class AmendPurchaseDto {
   @IsOptional() @IsString() @Matches(/^\d{1,12}(?:\.\d{1,6})?$/) unitPricePerKg?: string;
 }
 class PurchaseDto {
+  @IsOptional() @IsString() @MaxLength(150) deliveredBy?: string;
   @IsOptional() @IsString() @Matches(/\S/) @MaxLength(150) supplierName?: string;
   @IsOptional() @IsUUID() supplierId?: string;
   @IsIn(["UZS", "USD"]) currency!: "UZS" | "USD";
@@ -192,6 +193,7 @@ export class OperationsService {
             createdBy: actorId,
             currency: dto.currency,
             notes: dto.notes,
+            deliveredBy: dto.deliveredBy?.trim() || null,
           },
         });
         await tx.businessDocument.create({
@@ -460,6 +462,9 @@ export class OperationsController {
         lot: { include: { stockLot: { include: { originDocument: true } } } } },
     }, q);
     return { ...result, items: result.items.map((line: any) => ({
+      deliveredBy: line.receipt.deliveredBy,
+      mainSupplierId: line.receipt.supplierId,
+      mainSupplierName: line.receipt.supplier?.name ?? line.supplierName,
       ...effectivePurchase(line), number: line.receipt.number, currency: line.revisions[0]?.currency ?? line.receipt.currency,
       supplierName: line.revisions.length ? line.revisions[0].supplierName : (line.supplierName ?? line.receipt.supplier?.name),
       grossKg: line.quantityKg.plus(line.returnedKg).toString(),

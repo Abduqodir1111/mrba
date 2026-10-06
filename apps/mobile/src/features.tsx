@@ -976,7 +976,7 @@ function CompactReportTable({ headers, widths, rows, onPress }: { headers: strin
     </ScrollView>
   </View>;
 }
-function ReceiptSummaryCard({ lines, period, supplier }: { lines: any[]; period: string; supplier: string }) {
+function ReceiptSummaryCard({ lines, period, supplier, title = "Средняя цена сырья за период" }: { lines: any[]; period: string; supplier: string; title?: string }) {
   const groups = receiptSummary(lines);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const selected = groups.find(group => group.key === selectedKey);
@@ -984,7 +984,7 @@ function ReceiptSummaryCard({ lines, period, supplier }: { lines: any[]; period:
   const currencies = [...new Set<string>(groups.map(group => group.currency))];
   const number = (value: any) => fmt(new Decimal(value).toDecimalPlaces(2));
   return <Card style={{ padding: 10 }}>
-    <Text style={[s.text, { fontWeight: "700", marginBottom: 5 }]}>Поступления за период</Text>
+    <Text style={[s.text, { fontWeight: "700", marginBottom: 5 }]}>{title}</Text>
     <Text style={[s.muted, { fontSize: 11, marginBottom: 5 }]}>{period} · Ташкент</Text>
     <Text style={[s.muted, { fontSize: 11, marginBottom: 10 }]}>{supplier || "Все поставщики"} · вес в кг</Text>
     {currencies.map(currency => {
@@ -993,7 +993,7 @@ function ReceiptSummaryCard({ lines, period, supplier }: { lines: any[]; period:
       const values = (group: any) => [group.name, number(group.gross), number(group.returned), number(group.manual.plus(group.percent)), number(group.total), number(group.payable), group.pricedKg.gt(0) ? number(group.amount.div(group.pricedKg)) : "—", group.unpriced === group.count ? "—" : `${number(group.amount)}${group.unpriced ? "*" : ""}`];
       return <View key={currency} style={{ marginBottom: 10 }}>
         <Text style={[s.muted, { fontSize: 11, marginBottom: 4 }]}>{currency}</Text>
-        <CompactReportTable headers={["Сырьё", "Получено", "Возврат", "Скидки кг", "Принято", "К оплате кг", "За кг", "Сумма"]} widths={[18, 10, 10, 10, 10, 10, 13, 19]} onPress={setSelectedKey} rows={[
+        <CompactReportTable headers={["Сырьё", "Получено", "Возврат", "Скидки кг", "Принято", "К оплате кг", "Средняя за кг", "Сумма"]} widths={[18, 10, 10, 10, 10, 10, 13, 19]} onPress={setSelectedKey} rows={[
           ...items.map(group => ({ key: group.key, values: values(group) })),
           { key: `total:${currency}`, total: true, values: ["ИТОГО", number(sum("gross")), number(sum("returned")), number(sum("manual").plus(sum("percent"))), number(sum("total")), number(sum("payable")), "—", `${number(sum("amount"))}${items.some(group => group.unpriced) ? "*" : ""}`] },
         ]} />
@@ -1017,6 +1017,35 @@ function ReceiptSummaryCard({ lines, period, supplier }: { lines: any[]; period:
       </View></View>
     </Modal>}
   </Card>;
+}
+
+function SupplierSettlementReport({ lines, period, supplier }: { lines: any[]; period: string; supplier: string }) {
+  const posted = lines.filter(line => line.status === "POSTED").sort((a,b) => new Date(a.postedAt).getTime() - new Date(b.postedAt).getTime() || a.number - b.number || a.material.name.localeCompare(b.material.name, "ru"));
+  const currencies = [...new Set<string>(posted.map(line => line.currency))];
+  const number = (value: any) => fmt(new Decimal(value).toDecimalPlaces(2));
+  const dateTime = (value: string) => new Date(value).toLocaleString("ru-RU", { timeZone: "Asia/Tashkent", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+  const settlementRows = (currency: string) => {
+    const items = posted.filter(line => line.currency === currency);
+    const sum = (field: string) => items.reduce((total, line) => total.plus(line[field] ?? 0), new Decimal(0));
+    const missing = items.some(line => !line.priceKnown);
+    return [
+      ...items.map(line => ({ key: line.id, values: [dateTime(line.postedAt), String(line.number), line.deliveredBy || "Не указан", line.material.name, number(line.grossKg), number(line.returnedKg), number(line.discountKg), `${number(line.discountPercent)}%`, number(line.percentDiscountKg ?? 0), number(new Decimal(line.grossKg).minus(line.returnedKg).minus(line.discountKg).minus(line.percentDiscountKg ?? 0)), line.priceKnown ? number(line.unitPricePerKg) : "—", line.priceKnown ? number(line.amount) : "—"] })),
+      { key: `total:${currency}`, total: true, values: ["ИТОГО", "—", "—", "Все материалы", number(sum("grossKg")), number(sum("returnedKg")), number(sum("discountKg")), "—", number(sum("percentDiscountKg")), number(sum("grossKg").minus(sum("returnedKg")).minus(sum("discountKg")).minus(sum("percentDiscountKg"))), "—", `${number(items.filter(line => line.priceKnown).reduce((total,line) => total.plus(line.amount),new Decimal(0)))}${missing ? "*" : ""}`] },
+    ];
+  };
+  if (!posted.length) return <Empty text="За выбранный период приходов поставщика нет." />;
+  return <>
+    <Card style={{ padding: 10 }}>
+      <Text style={[s.text, { fontWeight: "700", marginBottom: 6 }]}>Расчёт с поставщиком · {supplier}</Text>
+      <Text style={[s.muted, { fontSize: 11, marginBottom: 10 }]}>{period} · время Ташкента</Text>
+      {currencies.map(currency => <View key={currency} style={{ marginBottom: 12 }}>
+        <Text style={[s.text, { fontWeight: "700", marginBottom: 6 }]}>{currency}</Text>
+        <CompactReportTable headers={["Дата поступления", "Приход №", "Кто привёз", "Сырьё", "Получено кг", "Возврат кг", "Скидка кг", "Скидка %", "Скидка % в кг", "Чистыми кг", "Цена за кг", "Сумма"]} widths={[20, 10, 18, 20, 12, 12, 12, 12, 14, 14, 14, 22]} rows={settlementRows(currency)} />
+      </View>)}
+      <Text style={[s.muted, { fontSize: 11 }]}>Чистыми = получено − возврат − скидка в кг − процентная скидка в кг. Сумма каждой строки рассчитана по её собственной цене. Оплаты и авансы здесь не учитываются. * — сумма неполная: есть приходы без цены.</Text>
+    </Card>
+    <ReceiptSummaryCard lines={posted} period={period} supplier={supplier} title="Итоги для оплаты по сырью" />
+  </>;
 }
 
 function ReceiptHistory({ lines, search, edit, summary }: { lines: any[]; search: string; edit: (form: Form) => void; summary?: { period: string; supplier: string } }) {
@@ -1049,11 +1078,12 @@ function ReceiptHistory({ lines, search, edit, summary }: { lines: any[]; search
   };
   const header = (group: any[]) => {
     const receipt = group[0];
-    const names = [...new Set(group.map(line => line.supplierName || "Поставщик не указан"))];
+    const names = [...new Set(group.map(line => line.mainSupplierName || line.supplierName || "Поставщик не указан"))];
     const timestamp = new Date(receipt.postedAt);
     return <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 12 }}>
       <View style={{ flex: 1, minWidth: 0 }}>
         <Text style={[s.section, { marginTop: 0, fontWeight: "700" }]}>{names.join(" · ")}</Text>
+        {!!receipt.deliveredBy && <Text style={s.muted}>Привёз: {receipt.deliveredBy}</Text>}
         <Text style={s.muted}>Приход №{receipt.number}{receipt.status === "POSTED" ? "" : " · Отменено"}</Text>
       </View>
       <View style={{ alignItems: "flex-end", gap: 4 }}>
@@ -1163,7 +1193,8 @@ export function Workspace({
   const [stockPeriod, setStockPeriod] = useState<{from:number;to:number}>({from:-Infinity,to:Infinity});
   const [stockPeriodError, setStockPeriodError] = useState("");
   const [stockFiltersOpen, setStockFiltersOpen] = useState(false);
-  const [stockFilterDraft, setStockFilterDraft] = useState({from:"",to:"",supplier:"",material:""});
+  const [stockReport, setStockReport] = useState("stock");
+  const [stockFilterDraft, setStockFilterDraft] = useState({from:"",to:"",supplier:"",material:"",report:"stock"});
   const [stockSupplier, setStockSupplier] = useState("");
   const [stockMaterial, setStockMaterial] = useState("");
   const [stockTableSelection, setStockTableSelection] = useState<string | null>(null);
@@ -1247,7 +1278,7 @@ export function Workspace({
       JSON.stringify(r).toLowerCase().includes(search.toLowerCase()),
     );
   const receiptByLine = new Map(rows("purchase-lines").map(line => [line.id, line]));
-  const supplierOf = (row: any) => receiptByLine.get(row.lot.purchaseLot?.line.id)?.supplierName ?? row.lot.purchaseLot?.line.supplierName ?? "";
+  const supplierOf = (row: any) => receiptByLine.get(row.lot.purchaseLot?.line.id)?.mainSupplierName ?? receiptByLine.get(row.lot.purchaseLot?.line.id)?.supplierName ?? row.lot.purchaseLot?.line.supplierName ?? "";
   const periodStock = rows("stock").filter(row => {
     const posted = receiptByLine.get(row.lot.purchaseLot?.line.id)?.postedAt ?? row.lot.createdAt;
     const time = new Date(posted).getTime();
@@ -1255,12 +1286,12 @@ export function Workspace({
   });
   const filterStock = rows("stock");
   const receiptItemId = (line: any) => line.lot?.stockLot?.itemId ?? rows("items").find(item => item.materialId === line.materialId)?.id;
-  const stockSupplierOptions = [...new Set([...filterStock.map(supplierOf), ...rows("purchase-lines").map(line => line.supplierName)].filter(Boolean))].sort().map(name => ({id:name,name}));
+  const stockSupplierOptions = [...new Set([...filterStock.map(supplierOf), ...rows("purchase-lines").map(line => line.mainSupplierName ?? line.supplierName)].filter(Boolean))].sort().map(name => ({id:name,name}));
   const stockMaterialOptions = [...new Map([...filterStock.map(row => [row.lot.itemId, {id:row.lot.itemId,name:row.lot.item.name}] as const), ...rows("purchase-lines").filter(line => receiptItemId(line)).map(line => [receiptItemId(line), {id:receiptItemId(line),name:line.material.name}] as const)]).values()];
   const visibleReceiptLines = rows("purchase-lines").filter(line => {
     const time = new Date(line.postedAt).getTime();
     return time >= stockPeriod.from && time <= stockPeriod.to
-      && (!stockSupplier || line.supplierName === stockSupplier)
+      && (!stockSupplier || (line.mainSupplierName ?? line.supplierName) === stockSupplier)
       && (!stockMaterial || receiptItemId(line) === stockMaterial);
   });
   const visibleStock = periodStock.filter(row => (!stockSupplier || supplierOf(row) === stockSupplier) && (!stockMaterial || row.lot.itemId === stockMaterial));
@@ -1415,10 +1446,10 @@ export function Workspace({
             {section === "inventory" && <Pressable
               accessibilityRole="button" accessibilityLabel="Фильтры склада"
               accessibilityState={{ expanded: stockFiltersOpen }}
-              onPress={() => { setStockFilterDraft({from:stockFrom,to:stockTo,supplier:stockSupplier,material:stockMaterial}); setStockPeriodError(""); setStockFiltersOpen(true); }}
-              style={{ width:44,height:44,borderRadius:12,alignItems:"center",justifyContent:"center",backgroundColor:stockFrom || stockTo || stockSupplier || stockMaterial ? c.softBlue : c.white }}>
+              onPress={() => { setStockFilterDraft({from:stockFrom,to:stockTo,supplier:stockSupplier,material:stockMaterial,report:stockReport}); setStockPeriodError(""); setStockFiltersOpen(true); }}
+              style={{ width:44,height:44,borderRadius:12,alignItems:"center",justifyContent:"center",backgroundColor:stockFrom || stockTo || stockSupplier || stockMaterial || stockReport !== "stock" ? c.softBlue : c.white }}>
               <Ionicons name="options-outline" size={22} color={c.blue} />
-              {!!(stockFrom || stockTo || stockSupplier || stockMaterial) && <View style={{position:"absolute",right:6,top:6,width:7,height:7,borderRadius:4,backgroundColor:c.blue}} />}
+              {!!(stockFrom || stockTo || stockSupplier || stockMaterial || stockReport !== "stock") && <View style={{position:"absolute",right:6,top:6,width:7,height:7,borderRadius:4,backgroundColor:c.blue}} />}
             </Pressable>}
             <Pressable
               accessibilityLabel="Обновить раздел"
@@ -1708,11 +1739,10 @@ export function Workspace({
             <Text style={[s.productionTabText, { color: inventoryView === value ? c.white : c.muted }]}>{title}</Text>
           </Pressable>)}
         </View>
-        {inventoryView === "history" && <ReceiptHistory key={`${stockFrom}|${stockTo}|${stockSupplier}|${stockMaterial}`} lines={visibleReceiptLines} search={search} edit={setForm}
-          summary={stockFrom || stockTo || stockSupplier || stockMaterial ? {
-            period: `${stockFrom ? new Date(stockPeriod.from).toLocaleString("ru-RU", { timeZone: "Asia/Tashkent", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "С начала учёта"} — ${stockTo ? new Date(stockPeriod.to).toLocaleString("ru-RU", { timeZone: "Asia/Tashkent", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "по настоящее время"}`,
-            supplier: stockSupplier,
-          } : undefined} />}
+        {stockReport === "average" && <ReceiptSummaryCard lines={visibleReceiptLines.filter(line => line.material.name.toLowerCase().includes(search.toLowerCase()))} period={stockReportPeriod} supplier={stockSupplier} />}
+        {stockReport === "supplier" && <SupplierSettlementReport lines={visibleReceiptLines.filter(line => line.material.name.toLowerCase().includes(search.toLowerCase()))} period={stockReportPeriod} supplier={stockSupplier} />}
+        {stockReport === "average" && !visibleReceiptLines.some(line => line.status === "POSTED") && <Empty text="За выбранный период приходов нет." />}
+        {inventoryView === "history" && <ReceiptHistory key={`${stockFrom}|${stockTo}|${stockSupplier}|${stockMaterial}`} lines={visibleReceiptLines} search={search} edit={setForm} />}
       </>}
           {section === "inventory" && stockFiltersOpen && <Modal transparent animationType="fade" onRequestClose={() => setStockFiltersOpen(false)}>
             <KeyboardProvider>
@@ -1723,7 +1753,9 @@ export function Workspace({
                     <Pressable accessibilityRole="button" accessibilityLabel="Закрыть фильтры" onPress={() => setStockFiltersOpen(false)} style={s.modalClose}><Ionicons name="close" size={20} color={c.ink} /></Pressable>
                   </View>
                   <KeyboardAwareScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{padding:16}}>
-                    <Text style={s.label}>Период поступления · время Ташкента</Text>
+                    <Text style={s.label}>Вид отчёта</Text>
+                    <MaterialDropdown label="Вид отчёта" disabled={false} options={[{id:"stock",name:"Остатки и история"},{id:"average",name:"Средняя цена сырья"},{id:"supplier",name:"Расчёт с поставщиком"}]} value={stockFilterDraft.report} onChange={report => setStockFilterDraft(d => ({...d,report}))} />
+                    <Text style={[s.label,{marginTop:12}]}>Период поступления · время Ташкента</Text>
                     <Text style={s.muted}>С даты и времени</Text>
                     <DateTimeField label="С даты и времени" value={stockFilterDraft.from} onChange={from => setStockFilterDraft(d => ({...d,from}))} />
                     <Text style={[s.muted,{marginTop:10}]}>По дату и время включительно</Text>
@@ -1745,10 +1777,12 @@ export function Workspace({
               };
               const from = parse(stockFilterDraft.from, -Infinity), to = parse(stockFilterDraft.to, Infinity) + (stockFilterDraft.to ? 59999 : 0);
               if (Number.isNaN(from) || Number.isNaN(to) || from > to) { setStockPeriodError("Проверьте даты: начало должно быть раньше конца периода."); return; }
+              if (stockFilterDraft.report === "supplier" && !stockFilterDraft.supplier) { setStockPeriodError("Для расчёта выберите основного поставщика."); return; }
+              setStockReport(stockFilterDraft.report);
               setStockPeriod({from,to}); setStockFrom(stockFilterDraft.from); setStockTo(stockFilterDraft.to); setStockSupplier(stockFilterDraft.supplier); setStockMaterial(stockFilterDraft.material); setStockPeriodError(""); setStockFiltersOpen(false);
 
                     }} />
-                    <Btn secondary title="Сбросить фильтры" onPress={() => { setStockFrom("");setStockTo("");setStockPeriod({from:-Infinity,to:Infinity});setStockSupplier("");setStockMaterial("");setStockPeriodError("");setStockFiltersOpen(false); }} />
+                    <Btn secondary title="Сбросить фильтры" onPress={() => { setStockFrom("");setStockTo("");setStockPeriod({from:-Infinity,to:Infinity});setStockSupplier("");setStockMaterial("");setStockReport("stock");setStockPeriodError("");setStockFiltersOpen(false); }} />
                   </View>
                 </View>
               </View>
@@ -1783,7 +1817,8 @@ export function Workspace({
                 title: "Приход сырья",
                 allowDraft: true,
                 fields: [
-                  { key: "supplierName", label: "Кто дал сырьё", required: false, dropdown: true, creatable: true, options: [...new Set([...rows("suppliers").map(x => x.name), ...rows("purchase-lines").map(x => x.supplierName).filter(Boolean)])].map(name => ({ id: name, name })) },
+                  { key: "supplierName", label: "Основной поставщик", required: false, dropdown: true, creatable: true, options: [...new Set([...rows("suppliers").map(x => x.name), ...rows("purchase-lines").map(x => x.supplierName).filter(Boolean)])].map(name => ({ id: name, name })) },
+                  { key: "deliveredBy", label: "Кто привёз", required: false, dropdown: true, creatable: true, options: [...new Set(rows("purchase-lines").map(x => x.deliveredBy).filter(Boolean))].map(name => ({id:name,name})) },
                   { ...currencies, value: "UZS", extra: true, extraStart: true },
                   { key: "notes", label: "Комментарий", required: false },
                 ],
@@ -1821,6 +1856,7 @@ export function Workspace({
                 submit: (v, send) =>
                   send("/purchase-receipts", {
                     currency: v.currency,
+                    deliveredBy: v.deliveredBy?.replace(/^new:/, "").trim() || undefined,
                     supplierName: v.supplierName?.replace(/^new:/, "").trim() || undefined,
                     notes: v.notes,
                     lines: formRows(v).map((l) => ({
@@ -1869,7 +1905,6 @@ export function Workspace({
             ))}
           </View>
           {stockFilterActive && <>
-            <ReceiptSummaryCard lines={visibleReceiptLines.filter(line => line.material.name.toLowerCase().includes(search.toLowerCase()))} period={stockReportPeriod} supplier={stockSupplier} />
             <Card style={{ padding: 10 }}>
               <Text style={[s.text, { fontWeight: "700", marginBottom: 8 }]}>Текущие остатки · {stockWarehouse}</Text>
               <CompactReportTable headers={["Материал", "Всего", "Основная часть", "Из скидки", "Доступно"]} widths={[28, 18, 18, 18, 18]} onPress={key => setStockTableSelection(stockTableSelection === key ? null : key)} rows={[

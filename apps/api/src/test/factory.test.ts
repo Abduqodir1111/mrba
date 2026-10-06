@@ -1533,3 +1533,27 @@ test("late price flows into completed production and returns cannot use reserved
   await post(`/purchase-lines/${line.id}/amend`, { ...amend, version: 1, returnedKg: "10" }, randomUUID(), 409);
   assert.equal(await db.purchaseRevision.count({ where: { lineId: line.id } }), 1);
 });
+
+test("receipt keeps main supplier separate from delivery person for every material and retry", async () => {
+  const key = randomUUID();
+  const supplierName = `Report supplier ${key}`;
+  const payload = { supplierName, deliveredBy: "  Шамшод  ", currency: "UZS", lines: [
+    { materialName: `Report copper ${key}`, quantity: "3000", unit: "kg", unitPricePerKg: "20000" },
+    { materialName: `Report brass ${key}`, quantity: "2000", unit: "kg", unitPricePerKg: "21000" },
+  ] };
+  const receipt = (await post("/purchase-receipts", payload, key)).body;
+  assert.deepEqual((await post("/purchase-receipts", payload, key)).body, receipt);
+  const saved = await db.purchaseReceipt.findUniqueOrThrow({where:{id:receipt.id},include:{supplier:true}});
+  assert.equal(saved.deliveredBy, "Шамшод");
+  assert.equal(saved.supplier!.name, supplierName);
+  const response = await request(app.getHttpServer()).get("/api/v1/purchase-lines").set("Authorization", `Bearer ${token}`).expect(200);
+  const lines = response.body.items.filter((line: any) => line.receiptId === receipt.id);
+  assert.equal(lines.length, 2);
+  for (const line of lines) {
+    assert.equal(line.deliveredBy, "Шамшод");
+    assert.equal(line.mainSupplierName, supplierName);
+    assert.equal(line.mainSupplierId, saved.supplierId);
+  }
+  assert.deepEqual(lines.map((line: any) => line.unitPricePerKg).sort(), ["20000", "21000"]);
+  await post("/purchase-receipts", {...payload, deliveredBy: "x".repeat(151)}, randomUUID(), 400);
+});
