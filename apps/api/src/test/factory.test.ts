@@ -1555,5 +1555,13 @@ test("receipt keeps main supplier separate from delivery person for every materi
     assert.equal(line.mainSupplierId, saved.supplierId);
   }
   assert.deepEqual(lines.map((line: any) => line.unitPricePerKg).sort(), ["20000", "21000"]);
+  const exported = await request(app.getHttpServer()).post("/api/v1/reports/supplier/pdf").set("Authorization", `Bearer ${token}`).send({supplier:supplierName}).expect(201);
+  assert.equal(Buffer.from(exported.body.base64,"base64").subarray(0,5).toString(),"%PDF-");
+  assert.match(exported.body.filename,/\.pdf$/);
+  assert.equal(exported.headers["cache-control"],"no-store");
+  await request(app.getHttpServer()).post("/api/v1/reports/supplier/pdf").send({supplier:supplierName}).expect(401);
+  await request(app.getHttpServer()).post("/api/v1/reports/supplier/pdf").set("Authorization", `Bearer ${token}`).send({supplier:supplierName,from:"2026-10-10T00:00:00Z",to:"2026-10-01T00:00:00Z"}).expect(400);
+  await request(app.getHttpServer()).post("/api/v1/reports/supplier/pdf").set("Authorization", `Bearer ${token}`).send({supplier:`Missing ${key}`}).expect(400);
+
   await post("/purchase-receipts", {...payload, deliveredBy: "x".repeat(151)}, randomUUID(), 400);
 });

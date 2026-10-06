@@ -1,3 +1,4 @@
+import { supplierPdf } from "./supplier-pdf";
 import { effectivePurchase, revisionInclude } from "./purchase-values";
 import { Query } from "@nestjs/common";
 import { page, PageQuery } from "./pagination";
@@ -7,6 +8,8 @@ import {
   Controller,
   Get,
   Headers,
+  Header,
+  BadRequestException,
   Injectable,
   NotFoundException,
   Param,
@@ -19,6 +22,7 @@ import {
 import {
   isUUID,
   IsInt,
+  IsISO8601,
   Min,
   ArrayMaxSize,
   ArrayMinSize,
@@ -63,6 +67,13 @@ class AmendPurchaseDto {
   @IsString() @Matches(/^\d{1,12}$/) discountKg!: string;
   @IsString() @Matches(/^\d{1,3}(?:\.\d{1,2})?$/) discountPercent!: string;
   @IsOptional() @IsString() @Matches(/^\d{1,12}(?:\.\d{1,6})?$/) unitPricePerKg?: string;
+}
+class SupplierPdfDto {
+  @IsString() @Matches(/\S/) @MaxLength(150) supplier!: string;
+  @IsOptional() @IsISO8601() from?: string;
+  @IsOptional() @IsISO8601() to?: string;
+  @IsOptional() @IsUUID() itemId?: string;
+  @IsOptional() @IsString() @MaxLength(150) search?: string;
 }
 class PurchaseDto {
   @IsOptional() @IsString() @MaxLength(150) deliveredBy?: string;
@@ -471,6 +482,22 @@ export class OperationsController {
       status: line.lot?.stockLot?.originDocument.status,
       postedAt: line.receipt.postedAt,
     })) };
+  }
+  @Post("reports/supplier/pdf") @Allow("inventory.read") @Header("Cache-Control", "no-store")
+  async exportSupplierPdf(@Body() dto: SupplierPdfDto) {
+    if (dto.from && dto.to && new Date(dto.from) > new Date(dto.to)) throw new BadRequestException("Проверьте период отчёта");
+    const supplier = dto.supplier.trim();
+    const where: Prisma.PurchaseLineWhereInput = {
+      ...(dto.search?.trim() ? {material:{name:{contains:dto.search.trim(),mode:"insensitive"}}} : {}),
+      lot:{stockLot:{originDocument:{status:"POSTED"},...(dto.itemId?{itemId:dto.itemId}:{})}},
+      receipt:{postedAt:{...(dto.from?{gte:new Date(dto.from)}:{}),...(dto.to?{lte:new Date(dto.to)}:{})}},
+      OR:[{receipt:{supplier:{name:supplier}}},{receipt:{supplierId:null},supplierName:supplier}],
+    };
+    const records = await this.db.purchaseLine.findMany({where,orderBy:[{receipt:{postedAt:"asc"}},{receipt:{number:"asc"}},{id:"asc"}],take:1001,include:{material:true,receipt:true,revisions:revisionInclude}});
+    if (!records.length) throw new BadRequestException("Нет поступлений для выбранных фильтров");
+    if (records.length > 1000) throw new BadRequestException("Слишком много поступлений. Выберите более короткий период");
+    const pdf = await supplierPdf(records.map(line=>({...line,...effectivePurchase(line)})),supplier,dto.from,dto.to);
+    return { filename:`MRBA-supplier-${new Date().toISOString().slice(0,10)}.pdf`, base64:pdf.toString("base64") };
   }
   @Get("purchase-lines/:id/revisions") @Allow("inventory.read") async purchaseRevisions(@Param("id", ParseUUIDPipe) id: string) {
     const line = await this.db.purchaseLine.findUnique({ where: { id }, include: { receipt: true, revisions: { orderBy: { version: "desc" } } } });

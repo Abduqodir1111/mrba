@@ -1,3 +1,4 @@
+import { savePdf } from "./save-pdf";
 import { DateTimeField } from "./date-time-field";
 import { receiptPreview, receiptSummary } from "./receipt-preview";
 import { Collapsible } from "./collapsible";
@@ -11,6 +12,7 @@ import {
   Alert,
   Linking,
   Modal,
+  Platform,
   Pressable,
   Share,
   ScrollView,
@@ -1019,7 +1021,18 @@ function ReceiptSummaryCard({ lines, period, supplier, title = "Средняя �
   </Card>;
 }
 
-function SupplierSettlementReport({ lines, period, supplier }: { lines: any[]; period: string; supplier: string }) {
+function SupplierSettlementReport({ lines, period, supplier, pdfFilters }: { lines: any[]; period: string; supplier: string; pdfFilters: { from?: string; to?: string; itemId?: string; search?: string } }) {
+  const [pdfBusy, setPdfBusy] = useState(false);
+  const [pdfError, setPdfError] = useState("");
+  const download = async () => {
+    if (pdfBusy) return;
+    setPdfBusy(true);setPdfError("");
+    try {
+      const result = await api<{base64:string;filename:string}>("/reports/supplier/pdf",{method:"POST",body:JSON.stringify({supplier,...pdfFilters})});
+      savePdf(result.base64,result.filename);
+    } catch (error) { setPdfError(error instanceof Error ? error.message : "Не удалось сформировать PDF"); }
+    finally { setPdfBusy(false); }
+  };
   const posted = lines.filter(line => line.status === "POSTED").sort((a,b) => new Date(a.postedAt).getTime() - new Date(b.postedAt).getTime() || a.number - b.number || a.material.name.localeCompare(b.material.name, "ru"));
   const currencies = [...new Set<string>(posted.map(line => line.currency))];
   const number = (value: any) => fmt(new Decimal(value).toDecimalPlaces(2));
@@ -1037,6 +1050,8 @@ function SupplierSettlementReport({ lines, period, supplier }: { lines: any[]; p
   return <>
     <Card style={{ padding: 10 }}>
       <Text style={[s.text, { fontWeight: "700", marginBottom: 6 }]}>Расчёт с поставщиком · {supplier}</Text>
+      {Platform.OS === "web" && <Btn secondary title={pdfBusy ? "Формируем PDF…" : "Скачать PDF для поставщика"} onPress={() => { void download(); }} disabled={pdfBusy} />}
+      {!!pdfError && <Text accessibilityRole="alert" style={s.error}>{pdfError}</Text>}
       <Text style={[s.muted, { fontSize: 11, marginBottom: 10 }]}>{period} · время Ташкента</Text>
       {currencies.map(currency => <View key={currency} style={{ marginBottom: 12 }}>
         <Text style={[s.text, { fontWeight: "700", marginBottom: 6 }]}>{currency}</Text>
@@ -1740,7 +1755,7 @@ export function Workspace({
           </Pressable>)}
         </View>
         {stockReport === "average" && <ReceiptSummaryCard lines={visibleReceiptLines.filter(line => line.material.name.toLowerCase().includes(search.toLowerCase()))} period={stockReportPeriod} supplier={stockSupplier} />}
-        {stockReport === "supplier" && <SupplierSettlementReport lines={visibleReceiptLines.filter(line => line.material.name.toLowerCase().includes(search.toLowerCase()))} period={stockReportPeriod} supplier={stockSupplier} />}
+        {stockReport === "supplier" && <SupplierSettlementReport lines={visibleReceiptLines.filter(line => line.material.name.toLowerCase().includes(search.toLowerCase()))} period={stockReportPeriod} supplier={stockSupplier} pdfFilters={{from:stockFrom?new Date(stockPeriod.from).toISOString():undefined,to:stockTo?new Date(stockPeriod.to).toISOString():undefined,itemId:stockMaterial||undefined,search:search.trim()||undefined}} />}
         {stockReport === "average" && !visibleReceiptLines.some(line => line.status === "POSTED") && <Empty text="За выбранный период приходов нет." />}
         {inventoryView === "history" && <ReceiptHistory key={`${stockFrom}|${stockTo}|${stockSupplier}|${stockMaterial}`} lines={visibleReceiptLines} search={search} edit={setForm} />}
       </>}
