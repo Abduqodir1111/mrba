@@ -1,5 +1,5 @@
 import { DateTimeField } from "./date-time-field";
-import { receiptPreview } from "./receipt-preview";
+import { receiptPreview, receiptSummary } from "./receipt-preview";
 import { Collapsible } from "./collapsible";
 import {
   KeyboardAwareScrollView,
@@ -594,7 +594,7 @@ function Editor({
               {section.fields.map((f) => {
                 const group = f.key.startsWith("row_") ? f.key.split("_").slice(0, 2).join("_") : "main";
                 return <React.Fragment key={f.key}>
-                  {f.extraStart && <Btn secondary title={group === "main" ? (expandedExtras[group] ? "Скрыть валюту" : `Валюта · ${values[f.key] || "UZS"}`) : (expandedExtras[group] ? "Скрыть возврат, скидки и цену" : "Возврат, скидки и цена")} onPress={() => setExpandedExtras((old) => ({ ...old, [group]: !old[group] }))} />}
+                  {f.extraStart && <Btn secondary title={group === "main" ? (expandedExtras[group] ? "Скрыть валюту" : `Валюта · ${values[f.key] || "UZS"}`) : (expandedExtras[group] ? "Скрыть возврат и скидки" : "Возврат и скидки")} onPress={() => setExpandedExtras((old) => ({ ...old, [group]: !old[group] }))} />}
                   <Collapsible open={!f.extra || !!expandedExtras[group]} animate={!!f.extra}><View style={{ marginBottom: 14 }}>
                   <Text style={s.label}>
                     {f.label}
@@ -955,7 +955,71 @@ function Editor({
     </Modal>
   );
 }
-function ReceiptHistory({ lines, search, edit }: { lines: any[]; search: string; edit: (form: Form) => void }) {
+function CompactReportTable({ headers, widths, rows, onPress }: { headers: string[]; widths: number[]; rows: { key: string; values: string[]; total?: boolean }[]; onPress?: (key: string) => void }) {
+  const columnWidths = headers.map((header, index) => Math.max(
+    index === 0 ? 180 : 110,
+    widths[index] * 9,
+    ...rows.map(row => row.values[index].length * 7.5 + 24),
+    header.length * 7 + 24,
+  ));
+  const tableWidth = columnWidths.reduce((sum, value) => sum + value, 0);
+  const cells = (values: string[], header = false, total = false) => values.map((value, index) => <View key={index} style={{ width: columnWidths[index], paddingHorizontal: 10, paddingVertical: header ? 10 : 12, justifyContent: "center", borderRightWidth: index < values.length - 1 ? 1 : 0, borderRightColor: c.line }}>
+    <Text numberOfLines={1} style={{ fontSize: 13, lineHeight: 18, color: header ? c.muted : c.ink, fontWeight: header || total ? "700" : "500", textAlign: index === 0 ? "left" : "right" }}>{value}</Text>
+  </View>);
+  return <View style={{ maxWidth: "100%", minWidth: 0 }}>
+    <Text style={[s.muted, { fontSize: 11, marginBottom: 6 }]}>Проведите по таблице влево, чтобы увидеть все колонки →</Text>
+    <ScrollView horizontal showsHorizontalScrollIndicator nestedScrollEnabled directionalLockEnabled style={{ width: "100%" }} contentContainerStyle={{ paddingBottom: 6 }}>
+      <View style={{ width: tableWidth, borderWidth: 1, borderColor: c.line, borderRadius: 8, overflow: "hidden" }}>
+        <View style={{ flexDirection: "row", backgroundColor: c.softBlue }}>{cells(headers, true)}</View>
+        {rows.map((row, index) => <Pressable key={row.key} disabled={!onPress || row.total} accessibilityRole={onPress && !row.total ? "button" : undefined} accessibilityLabel={row.values.join(", ")} onPress={() => onPress?.(row.key)} style={{ flexDirection: "row", borderTopWidth: 1, borderTopColor: c.line, backgroundColor: row.total ? c.softBlue : index % 2 ? c.bg : c.white }}>{cells(row.values, false, row.total)}</Pressable>)}
+      </View>
+    </ScrollView>
+  </View>;
+}
+function ReceiptSummaryCard({ lines, period, supplier }: { lines: any[]; period: string; supplier: string }) {
+  const groups = receiptSummary(lines);
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const selected = groups.find(group => group.key === selectedKey);
+  if (!groups.length) return null;
+  const currencies = [...new Set<string>(groups.map(group => group.currency))];
+  const number = (value: any) => fmt(new Decimal(value).toDecimalPlaces(2));
+  return <Card style={{ padding: 10 }}>
+    <Text style={[s.text, { fontWeight: "700", marginBottom: 5 }]}>Поступления за период</Text>
+    <Text style={[s.muted, { fontSize: 11, marginBottom: 5 }]}>{period} · Ташкент</Text>
+    <Text style={[s.muted, { fontSize: 11, marginBottom: 10 }]}>{supplier || "Все поставщики"} · вес в кг</Text>
+    {currencies.map(currency => {
+      const items = groups.filter(group => group.currency === currency);
+      const sum = (field: string) => items.reduce((total, group) => total.plus(group[field]), new Decimal(0));
+      const values = (group: any) => [group.name, number(group.gross), number(group.returned), number(group.manual.plus(group.percent)), number(group.total), number(group.payable), group.pricedKg.gt(0) ? number(group.amount.div(group.pricedKg)) : "—", group.unpriced === group.count ? "—" : `${number(group.amount)}${group.unpriced ? "*" : ""}`];
+      return <View key={currency} style={{ marginBottom: 10 }}>
+        <Text style={[s.muted, { fontSize: 11, marginBottom: 4 }]}>{currency}</Text>
+        <CompactReportTable headers={["Сырьё", "Получено", "Возврат", "Скидки кг", "Принято", "К оплате кг", "За кг", "Сумма"]} widths={[18, 10, 10, 10, 10, 10, 13, 19]} onPress={setSelectedKey} rows={[
+          ...items.map(group => ({ key: group.key, values: values(group) })),
+          { key: `total:${currency}`, total: true, values: ["ИТОГО", number(sum("gross")), number(sum("returned")), number(sum("manual").plus(sum("percent"))), number(sum("total")), number(sum("payable")), "—", `${number(sum("amount"))}${items.some(group => group.unpriced) ? "*" : ""}`] },
+        ]} />
+      </View>;
+    })}
+    <Text style={[s.muted, { fontSize: 10 }]}>Скидки = вручную + процентная в кг. Цена — средневзвешенная. Нажмите строку для подробностей.</Text>
+    {groups.some(group => group.unpriced) && <Text style={[s.muted, { fontSize: 10 }]}>* Сумма неполная: есть позиции без цены. «—» — цена не указана.</Text>}
+    <Text style={[s.muted, { fontSize: 10, marginTop: 5 }]}>Принято — после возврата, до расхода. Текущий остаток показан отдельно.</Text>
+    {!!selected && <Modal visible transparent animationType="fade" onRequestClose={() => setSelectedKey(null)}>
+      <View style={{ flex: 1, backgroundColor: "#0008", justifyContent: "center", padding: 20 }}><View style={{ backgroundColor: c.white, borderRadius: 16, padding: 16 }}>
+        <Text style={s.section}>{selected.name}</Text>
+        <Row label="Получено" value={`${fmt(selected.gross)} кг`} />
+        <Row label="Возврат" value={`${fmt(selected.returned)} кг`} />
+        <Row label="Скидка вручную" value={`${fmt(selected.manual)} кг`} />
+        <Row label="Процентная скидка" value={`${fmt(selected.percent)} кг`} />
+        <Row label="Всего принято" value={`${fmt(selected.total)} кг`} />
+        <Row label="Вес к оплате" value={`${fmt(selected.payable)} кг`} />
+        <Row label="Сумма по указанным ценам" value={`${number(selected.amount)} ${selected.currency}`} />
+        {!!selected.unpriced && <Text style={s.muted}>Без цены: {selected.unpriced} из {selected.count} позиций.</Text>}
+        <Btn title="Закрыть" onPress={() => setSelectedKey(null)} />
+      </View></View>
+    </Modal>}
+  </Card>;
+}
+
+function ReceiptHistory({ lines, search, edit, summary }: { lines: any[]; search: string; edit: (form: Form) => void; summary?: { period: string; supplier: string } }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const groups = new Map<string, any[]>();
   for (const line of lines) {
@@ -1021,6 +1085,7 @@ function ReceiptHistory({ lines, search, edit }: { lines: any[]; search: string;
     </Card>
   </>;
   return <>
+    {summary && <ReceiptSummaryCard lines={matching.flat()} period={summary.period} supplier={summary.supplier} />}
     {!matching.length && <Empty text="Приходов пока нет или ничего не найдено." />}
     {matching.map(group => <Pressable key={group[0].receiptId} accessibilityRole="button"
       accessibilityLabel={`Открыть приход №${group[0].number}`} onPress={() => setSelectedId(group[0].receiptId)}>
@@ -1101,6 +1166,7 @@ export function Workspace({
   const [stockFilterDraft, setStockFilterDraft] = useState({from:"",to:"",supplier:"",material:""});
   const [stockSupplier, setStockSupplier] = useState("");
   const [stockMaterial, setStockMaterial] = useState("");
+  const [stockTableSelection, setStockTableSelection] = useState<string | null>(null);
   const [stockDetails, setStockDetails] = useState<string | null>(null);
   const [massUnit, setMassUnit] = useState<"kg" | "t">("kg");
   const mass = (value: any) =>
@@ -1221,6 +1287,9 @@ export function Workspace({
       }, new Map<string, any>())
       .values(),
   ) as any[];
+  const stockFilterActive = !!(stockFrom || stockTo || stockSupplier || stockMaterial);
+  const stockReportPeriod = `${stockFrom ? new Date(stockPeriod.from).toLocaleString("ru-RU", { timeZone: "Asia/Tashkent", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "С начала учёта"} — ${stockTo ? new Date(stockPeriod.to).toLocaleString("ru-RU", { timeZone: "Asia/Tashkent", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "по настоящее время"}`;
+  const stockTableGroups = groupedStock.filter(r => r.location.name === stockWarehouse && (!view || stockKind(r) === view) && r.lot.item.name.toLowerCase().includes(search.toLowerCase()));
   const loadingStock = Array.from(
     rows("stock")
       .filter(
@@ -1639,7 +1708,11 @@ export function Workspace({
             <Text style={[s.productionTabText, { color: inventoryView === value ? c.white : c.muted }]}>{title}</Text>
           </Pressable>)}
         </View>
-        {inventoryView === "history" && <ReceiptHistory key={`${stockFrom}|${stockTo}|${stockSupplier}|${stockMaterial}`} lines={visibleReceiptLines} search={search} edit={setForm} />}
+        {inventoryView === "history" && <ReceiptHistory key={`${stockFrom}|${stockTo}|${stockSupplier}|${stockMaterial}`} lines={visibleReceiptLines} search={search} edit={setForm}
+          summary={stockFrom || stockTo || stockSupplier || stockMaterial ? {
+            period: `${stockFrom ? new Date(stockPeriod.from).toLocaleString("ru-RU", { timeZone: "Asia/Tashkent", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "С начала учёта"} — ${stockTo ? new Date(stockPeriod.to).toLocaleString("ru-RU", { timeZone: "Asia/Tashkent", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "по настоящее время"}`,
+            supplier: stockSupplier,
+          } : undefined} />}
       </>}
           {section === "inventory" && stockFiltersOpen && <Modal transparent animationType="fade" onRequestClose={() => setStockFiltersOpen(false)}>
             <KeyboardProvider>
@@ -1727,6 +1800,12 @@ export function Workspace({
                       creatable: true,
                     },
                     weight("quantity", "Получено до возврата"),
+                    {
+                      key: "unitPricePerKg",
+                      required: false,
+                      label: "Цена за кг",
+                      number: true,
+                    },
                     { extra: true, extraStart: true, key: "returnedKg", label: "Возврат при приёмке, кг", number: true, required: false, value: "0" },
                     { extra: true, key: "discountPercent", label: "Дополнительная скидка, %", number: true, required: false, value: "0" },
                     {
@@ -1736,13 +1815,6 @@ export function Workspace({
                       number: true,
                       required: false,
                       value: "0",
-                    },
-                    {
-                      key: "unitPricePerKg",
-                      extra: true,
-                      required: false,
-                      label: "Цена за кг",
-                      number: true,
                     },
                   ],
                 },
@@ -1796,10 +1868,22 @@ export function Workspace({
               </Pressable>
             ))}
           </View>
+          {stockFilterActive && <>
+            <ReceiptSummaryCard lines={visibleReceiptLines.filter(line => line.material.name.toLowerCase().includes(search.toLowerCase()))} period={stockReportPeriod} supplier={stockSupplier} />
+            <Card style={{ padding: 10 }}>
+              <Text style={[s.text, { fontWeight: "700", marginBottom: 8 }]}>Текущие остатки · {stockWarehouse}</Text>
+              <CompactReportTable headers={["Материал", "Всего", "Основная часть", "Из скидки", "Доступно"]} widths={[28, 18, 18, 18, 18]} onPress={key => setStockTableSelection(stockTableSelection === key ? null : key)} rows={[
+                ...stockTableGroups.map(group => ({ key: group.key, values: [group.lot.item.name, fmt(group.onHandKg.div(massUnit === "t" ? 1000 : 1).toDecimalPlaces(2)), fmt(group.onHandKg.minus(group.discountOnHandKg).div(massUnit === "t" ? 1000 : 1).toDecimalPlaces(2)), fmt(group.discountOnHandKg.div(massUnit === "t" ? 1000 : 1).toDecimalPlaces(2)), fmt(group.onHandKg.minus(group.reservedKg).div(massUnit === "t" ? 1000 : 1).toDecimalPlaces(2))] })),
+                { key: "total", total: true, values: ["ИТОГО", ...["total", "base", "discount", "available"].map(field => fmt(stockTableGroups.reduce((sum, group) => sum.plus(field === "total" ? group.onHandKg : field === "base" ? group.onHandKg.minus(group.discountOnHandKg) : field === "discount" ? group.discountOnHandKg : group.onHandKg.minus(group.reservedKg)), new Decimal(0)).div(massUnit === "t" ? 1000 : 1).toDecimalPlaces(2)))] },
+              ]} />
+              <Text style={[s.muted, { fontSize: 10, marginTop: 7 }]}>{massUnit === "t" ? "Вес в тоннах" : "Вес в кг"}. Нажмите строку для операций с материалом.</Text>
+            </Card>
+          </>}
           {groupedStock
             .filter(
               (r) =>
                 r.location.name === stockWarehouse &&
+                (!stockFilterActive || r.key === stockTableSelection) &&
                 (!view || stockKind(r) === view) &&
                 r.lot.item.name.toLowerCase().includes(search.toLowerCase()),
             )
