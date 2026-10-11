@@ -163,6 +163,7 @@ class OutputDto {
 class CompleteDto extends VersionDto {
   @IsOptional() @IsString() @Matches(/^\d{1,12}$/) lossKg?: string;
   @IsOptional() @IsBoolean() handover?: boolean;
+  @IsOptional() @IsBoolean() automaticShift?: boolean;
   @IsOptional() @IsUUID() carryoverItemId?: string;
   @IsUUID() locationId!: string;
   @IsArray()
@@ -299,7 +300,17 @@ export class FactoryService {
       "PRODUCTION_COMPLETE",
       { batchId, ...dto },
       async (tx) => {
-        await lock(tx, `batch:${batchId}`);
+        const automatic = dto.automaticShift === true;
+        const hint = await tx.productionBatch.findUniqueOrThrow({
+          where: { id: batchId },
+        });
+        const shiftBatches = automatic
+          ? await tx.productionBatch.findMany({
+              where: { shiftId: hint.shiftId, status: "IN_PROGRESS" },
+              orderBy: { id: "asc" },
+            })
+          : [hint];
+        for (const b of shiftBatches) await lock(tx, `batch:${b.id}`);
         const batch = await tx.productionBatch.findUniqueOrThrow({
           where: { id: batchId },
           include: { shift: true },
@@ -313,6 +324,13 @@ export class FactoryService {
           where: { id: batch.shiftId },
         });
         ensure(shift.status === "OPEN", "Смена закрыта");
+        if (automatic)
+          ensure(
+            (await tx.productionBatch.count({
+              where: { shiftId: shift.id, status: "IN_PROGRESS" },
+            })) === shiftBatches.length,
+            "Список котлов изменился. Обновите производство перед пересменкой",
+          );
         const sourceLocation = await tx.stockLocation.findUniqueOrThrow({
           where: { id: batch.wipLocationId },
           include: { warehouse: true },
@@ -364,11 +382,13 @@ export class FactoryService {
           };
         });
         ensure(
-          dto.handover || outputs.some((o) => o.kind === "WASTE"),
+          automatic || dto.handover || outputs.some((o) => o.kind === "WASTE"),
           "После плавки обязательно укажите отходы и их вес",
         );
         ensure(
-          dto.handover || outputs.some((o) => o.kind === "PRODUCT"),
+          automatic ||
+            dto.handover ||
+            outputs.some((o) => o.kind === "PRODUCT"),
           "Укажите выпущенную продукцию",
         );
         const outputTotal = outputs.reduce(
@@ -379,29 +399,36 @@ export class FactoryService {
           total.gte(outputTotal),
           `Продукция и отходы (${outputTotal} кг) превышают загруженный вес (${total} кг)`,
         );
-        const loss = dto.handover
-          ? dto.lossKg !== undefined
-            ? decimal(dto.lossKg)
-            : total.div(100).toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP)
-          : total.minus(outputTotal);
-        const carryover = dto.handover
-          ? total.minus(outputTotal).minus(loss)
-          : decimal("0");
+        const loss = automatic
+          ? decimal(dto.lossKg ?? "0")
+          : dto.handover
+            ? dto.lossKg !== undefined
+              ? decimal(dto.lossKg)
+              : total.div(100).toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP)
+            : total.minus(outputTotal);
+        const carryover =
+          automatic || dto.handover
+            ? total.minus(outputTotal).minus(loss)
+            : decimal("0");
         let nextBatch: {
           id: string;
           wipLocationId: string;
           number: string;
         } | null = null;
-        if (dto.handover) {
+        let nextShiftId: string | null = null;
+        if (automatic || dto.handover) {
           ensure(
-            carryover.gt(0),
-            "После вычета продукции, отходов и указанных потерь должен остаться металл в котле. Если котёл пуст — выключите пересменку",
+            automatic ? carryover.gte(0) : carryover.gt(0),
+            automatic
+              ? "Продукция, отходы и потери превышают загрузку"
+              : "После вычета продукции, отходов и указанных потерь должен остаться металл в котле. Если котёл пуст — выключите пересменку",
           );
           const carryItem =
             dto.carryoverItemId &&
             (await tx.item.findUnique({ where: { id: dto.carryoverItemId } }));
           ensure(
-            carryItem && carryItem.kind === "PRODUCT" && carryItem.isActive,
+            (automatic && carryover.isZero()) ||
+              (carryItem && carryItem.kind === "PRODUCT" && carryItem.isActive),
             "Выберите продукцию, оставшуюся в котле",
           );
           const next = currentShift(new Date(shift.endsAt));
@@ -427,26 +454,29 @@ export class FactoryService {
             openNext.status === "OPEN",
             "Следующая смена закрыта — сначала откройте её",
           );
-          const nextId = randomUUID();
-          const number = `П-${next.businessDate}-${nextId.slice(0, 8)}`;
-          const nextLocation = await tx.stockLocation.create({
-            data: {
-              warehouseId: sourceLocation.warehouseId,
-              name: number,
-              kind: "WIP",
-            },
-          });
-          nextBatch = await tx.productionBatch.create({
-            data: {
-              id: nextId,
-              number,
-              equipmentId: batch.equipmentId,
-              shiftId: nextShift.id,
-              wipLocationId: nextLocation.id,
-              previousBatchId: batch.id,
-              startedAt: next.startsAt,
-            },
-          });
+          nextShiftId = nextShift.id;
+          if (carryover.gt(0)) {
+            const nextId = randomUUID();
+            const number = `П-${next.businessDate}-${nextId.slice(0, 8)}`;
+            const nextLocation = await tx.stockLocation.create({
+              data: {
+                warehouseId: sourceLocation.warehouseId,
+                name: number,
+                kind: "WIP",
+              },
+            });
+            nextBatch = await tx.productionBatch.create({
+              data: {
+                id: nextId,
+                number,
+                equipmentId: batch.equipmentId,
+                shiftId: nextShift.id,
+                wipLocationId: nextLocation.id,
+                previousBatchId: batch.id,
+                startedAt: next.startsAt,
+              },
+            });
+          }
         }
         await tx.businessDocument.create({
           data: {
@@ -539,9 +569,106 @@ export class FactoryService {
             version: { increment: 1 },
           },
         });
+        const transferredBatches: {
+          batchId: string;
+          nextBatchId: string;
+          quantityKg: string;
+        }[] = [];
+        if (automatic && nextShiftId) {
+          for (const other of shiftBatches.filter((b) => b.id !== batchId)) {
+            const current = await tx.productionBatch.findUniqueOrThrow({
+              where: { id: other.id },
+            });
+            ensure(
+              current.status === "IN_PROGRESS",
+              "Другая плавка уже изменена. Обновите производство",
+            );
+            const balances = await tx.inventoryBalance.findMany({
+              where: { locationId: other.wipLocationId, onHandKg: { gt: 0 } },
+            });
+            await balancesLock(tx, balances);
+            ensure(
+              balances.every((b) => b.reservedKg.isZero()),
+              "Снимите резервы с котлов перед пересменкой",
+            );
+            const weight = balances.reduce(
+              (sum, b) => sum.plus(b.onHandKg),
+              decimal("0"),
+            );
+            const oldLocation = await tx.stockLocation.findUniqueOrThrow({
+              where: { id: other.wipLocationId },
+            });
+            const childId = randomUUID();
+            const number = `П-${childId}`;
+            const childLocation = await tx.stockLocation.create({
+              data: {
+                warehouseId: oldLocation.warehouseId,
+                kind: "WIP",
+                name: number,
+              },
+            });
+            const child = await tx.productionBatch.create({
+              data: {
+                id: childId,
+                number,
+                equipmentId: other.equipmentId,
+                shiftId: nextShiftId,
+                wipLocationId: childLocation.id,
+                previousBatchId: other.id,
+              },
+            });
+            for (const balance of balances) {
+              await movement(
+                tx,
+                id,
+                balance.lotId,
+                balance.locationId,
+                balance.onHandKg.negated(),
+                "SHIFT_CARRYOVER",
+              );
+              await movement(
+                tx,
+                id,
+                balance.lotId,
+                child.wipLocationId,
+                balance.onHandKg,
+                "SHIFT_CARRYOVER",
+              );
+              await tx.productionInput.create({
+                data: {
+                  batchId: other.id,
+                  lotId: balance.lotId,
+                  quantityKg: balance.onHandKg,
+                },
+              });
+            }
+            await tx.productionBatch.update({
+              where: { id: other.id },
+              data: {
+                status: "COMPLETED",
+                carryoverKg: weight,
+                differenceKg: decimal("0"),
+                completedAt: new Date(),
+                version: { increment: 1 },
+              },
+            });
+            transferredBatches.push({
+              batchId: other.id,
+              nextBatchId: child.id,
+              quantityKg: weight.toString(),
+            });
+          }
+          await tx.shiftInstance.update({
+            where: { id: shift.id },
+            data: { status: "CLOSED", version: { increment: 1 } },
+          });
+        }
         return {
           id,
           batchId,
+          automaticShift: automatic,
+          nextShiftId,
+          transferredBatches,
           inputKg: total.toString(),
           lossKg: loss.toString(),
           carryoverKg: carryover.toString(),
@@ -603,7 +730,12 @@ export class FactoryController {
       },
       include: {
         lot: {
-          include: { item: true, purchaseLot: { include: { line: { include: { revisions: revisionInclude } } } } },
+          include: {
+            item: true,
+            purchaseLot: {
+              include: { line: { include: { revisions: revisionInclude } } },
+            },
+          },
         },
         location: true,
       },
@@ -615,14 +747,21 @@ export class FactoryController {
     const valued = [];
     for (const row of items.slice(0, q.limit)) {
       const unitCost = await costing.unit(row.lotId);
-      const line = row.lot.purchaseLot ? effectivePurchase(row.lot.purchaseLot.line) : null;
+      const line = row.lot.purchaseLot
+        ? effectivePurchase(row.lot.purchaseLot.line)
+        : null;
       valued.push({
         ...row,
-        lot: row.lot.purchaseLot ? { ...row.lot, purchaseLot: { ...row.lot.purchaseLot, line } } : row.lot,
+        lot: row.lot.purchaseLot
+          ? { ...row.lot, purchaseLot: { ...row.lot.purchaseLot, line } }
+          : row.lot,
         unitCost,
         stockValue: scaleCost(unitCost, row.onHandKg),
         discountOnHandKg: line
-          ? row.onHandKg.times(line.discountKg.plus(line.percentDiscountKg)).div(line.quantityKg).toString()
+          ? row.onHandKg
+              .times(line.discountKg.plus(line.percentDiscountKg))
+              .div(line.quantityKg)
+              .toString()
           : "0",
       });
     }
@@ -1156,7 +1295,7 @@ export class FactoryController {
         ensure(equipment.isActive, "Оборудование отключено");
         const now = currentShift(new Date());
         await lock(tx, `shift-start:${now.startsAt}`);
-        const shift = await tx.shiftInstance.upsert({
+        let shift = await tx.shiftInstance.upsert({
           where: { startsAt_code: { startsAt: now.startsAt, code: now.code } },
           create: {
             startsAt: now.startsAt,
@@ -1167,6 +1306,12 @@ export class FactoryController {
           },
           update: {},
         });
+        if (shift.status === "CLOSED") {
+          shift = await tx.shiftInstance.findFirstOrThrow({
+            where: { status: "OPEN", startsAt: { gte: shift.endsAt } },
+            orderBy: { startsAt: "desc" },
+          });
+        }
         await lock(tx, `shift:${shift.id}`);
         ensure(
           (
@@ -1180,7 +1325,7 @@ export class FactoryController {
           where: { siteId: equipment.siteId },
         });
         const batchId = randomUUID();
-        const number = `П-${now.businessDate}-${batchId.slice(0, 8)}`;
+        const number = `П-${shift.businessDate}-${batchId.slice(0, 8)}`;
         const loc = await tx.stockLocation.create({
           data: { warehouseId: w.id, name: number, kind: "WIP" },
         });

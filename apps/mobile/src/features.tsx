@@ -17,7 +17,6 @@ import {
   Share,
   ScrollView,
   StyleSheet,
-  Switch,
   Text,
   TextInput,
   View,
@@ -203,6 +202,7 @@ const wasteChoices = [
 ];
 type Option = { id: string; name: string };
 type Field = {
+  stockAvailableKg?: string;
   key: string;
   label: string;
   options?: Option[];
@@ -334,10 +334,10 @@ function Editor({
   saved: () => void;
   failed: () => void;
 }) {
-  const [handover, setHandover] = useState(false);
+  const handover = !!form.allowHandover;
   const [expandedExtras, setExpandedExtras] = useState<Record<string, boolean>>({});
   const actionLabel = handover
-    ? "Передать следующей смене"
+    ? "Завершить плавку и смену"
     : (actionLabels[form.title] ?? "Сохранить изменения");
   const [values, setValues] = useState<Record<string, string>>(
     Object.fromEntries(
@@ -418,7 +418,7 @@ function Editor({
     !!form.allowHandover &&
     (!actualLossKg ||
       exceedsLoadedWeight ||
-      (handover && (!carryoverKg || carryoverKg.lte(0))));
+      (handover && (!carryoverKg || carryoverKg.lt(0))));
   const wastePercent = (weight: Decimal | null) =>
     weight && loadedKg?.gt(0)
       ? `${weight.div(loadedKg).times(100).toFixed(2).replace(".", ",")}%`
@@ -508,9 +508,9 @@ function Editor({
         v._waste = JSON.stringify(waste);
       }
       if (form.allowHandover) {
-        if (handover && (!carryoverKg || carryoverKg.lte(0)))
+        if (handover && (!carryoverKg || carryoverKg.lt(0)))
           throw Error(
-            "После вычета продукции, отходов и указанных потерь должен остаться металл. Если котёл пуст — выключите пересменку.",
+            "Продукция, отходы и потери превышают загруженный вес.",
           );
         if (!handover && (!finishedProductKg || finishedProductKg.lte(0)))
           throw Error("Укажите вес выпущенной готовой продукции");
@@ -595,6 +595,8 @@ function Editor({
                 </View>}
               {section.fields.map((f) => {
                 const group = f.key.startsWith("row_") ? f.key.split("_").slice(0, 2).join("_") : "main";
+                const loadingQuantity = f.stockAvailableKg !== undefined ? enteredWeight(values[f.key])?.times(weightUnit === "t" ? 1000 : 1) : undefined;
+                const loadingRemaining = f.stockAvailableKg !== undefined && loadingQuantity ? new Decimal(f.stockAvailableKg).minus(loadingQuantity) : null;
                 return <React.Fragment key={f.key}>
                   {f.extraStart && <Btn secondary title={group === "main" ? (expandedExtras[group] ? "Скрыть валюту" : `Валюта · ${values[f.key] || "UZS"}`) : (expandedExtras[group] ? "Скрыть возврат и скидки" : "Возврат и скидки")} onPress={() => setExpandedExtras((old) => ({ ...old, [group]: !old[group] }))} />}
                   <Collapsible open={!f.extra || !!expandedExtras[group]} animate={!!f.extra}><View style={{ marginBottom: 14 }}>
@@ -602,6 +604,9 @@ function Editor({
                     {f.label}
                     {f.weight ? ` · ${weightUnit === "kg" ? "кг" : "т"}` : ""}
                   </Text>
+                  {f.stockAvailableKg !== undefined && <Text accessibilityLiveRegion="polite" style={[s.muted, {marginBottom:8}, loadingRemaining?.lt(0) && s.error]}>
+                    {loadingRemaining?.lt(0) ? `Не хватает на складе: ${fmt(loadingRemaining.abs())} кг` : `На складе после загрузки: ${loadingRemaining ? fmt(loadingRemaining) : "—"} кг`}
+                  </Text>}
                   {f.options && f.dropdown ? (
                     <MaterialDropdown creatable={f.creatable} options={f.options} value={values[f.key] ?? ""} label={f.label} disabled={busy} onChange={(value) => setValues((previous) => ({ ...previous, [f.key]: value }))} />
                   ) : f.options ? (
@@ -746,28 +751,9 @@ function Editor({
                 <View style={{ marginBottom: 20 }}>
                   {form.allowHandover && (
                     <View style={{ marginBottom: 20, gap: 8 }}>
-                      <View
-                        style={{
-                          flexDirection: "row",
-                          alignItems: "center",
-                          gap: 12,
-                        }}
-                      >
-                        <Text style={[s.label, { flex: 1 }]}>
-                          Пересменка — в котле остался металл
-                        </Text>
-                        <Switch
-                          accessibilityLabel="Пересменка — в котле остался металл"
-                          value={handover}
-                          disabled={busy}
-                          onValueChange={setHandover}
-                          trackColor={{ true: c.blue }}
-                        />
-                      </View>
+                      <Text style={s.label}>Автоматическая пересменка</Text>
                       <Text style={s.muted}>
-                        {handover
-                          ? "Укажите фактические потери отдельно. Остаток перейдёт следующей смене вместе с таннархом. Если продукцию ещё не извлекли, укажите 0 кг."
-                          : "Котёл пуст: весь недостающий вес будет учтён как безвозвратные потери."}
+                        Завершатся все плавки текущей смены. Остатки в котлах перейдут в следующую смену как загруженный металл, без повторного списания со склада. Потери укажите отдельно, только если они были.
                       </Text>
                     </View>
                   )}
@@ -895,8 +881,7 @@ function Editor({
                     />
                     {handover && carryoverKg?.lte(0) && (
                       <Text style={s.error}>
-                        Нет остатка для передачи. Проверьте вес или выключите
-                        пересменку.
+                        Продукция, отходы и потери превышают загрузку.
                       </Text>
                     )}
                     {actualLossKg?.lt(0) && (
@@ -1021,7 +1006,7 @@ function ReceiptSummaryCard({ lines, period, supplier, title = "Средняя �
   </Card>;
 }
 
-function SupplierSettlementReport({ lines, period, supplier, pdfFilters }: { lines: any[]; period: string; supplier: string; pdfFilters: { from?: string; to?: string; itemId?: string; search?: string } }) {
+function SupplierSettlementReport({ lines, period, supplier, pdfFilters, general = false }: { lines: any[]; period: string; supplier: string; general?: boolean; pdfFilters: { from?: string; to?: string; itemId?: string; search?: string } }) {
   const [pdfBusy, setPdfBusy] = useState(false);
   const [pdfError, setPdfError] = useState("");
   const download = async () => {
@@ -1042,24 +1027,24 @@ function SupplierSettlementReport({ lines, period, supplier, pdfFilters }: { lin
     const sum = (field: string) => items.reduce((total, line) => total.plus(line[field] ?? 0), new Decimal(0));
     const missing = items.some(line => !line.priceKnown);
     return [
-      ...items.map(line => ({ key: line.id, values: [dateTime(line.postedAt), String(line.number), line.deliveredBy || "Не указан", line.material.name, number(line.grossKg), number(line.returnedKg), number(line.discountKg), `${number(line.discountPercent)}%`, number(line.percentDiscountKg ?? 0), number(new Decimal(line.grossKg).minus(line.returnedKg).minus(line.discountKg).minus(line.percentDiscountKg ?? 0)), line.priceKnown ? number(line.unitPricePerKg) : "—", line.priceKnown ? number(line.amount) : "—"] })),
-      { key: `total:${currency}`, total: true, values: ["ИТОГО", "—", "—", "Все материалы", number(sum("grossKg")), number(sum("returnedKg")), number(sum("discountKg")), "—", number(sum("percentDiscountKg")), number(sum("grossKg").minus(sum("returnedKg")).minus(sum("discountKg")).minus(sum("percentDiscountKg"))), "—", `${number(items.filter(line => line.priceKnown).reduce((total,line) => total.plus(line.amount),new Decimal(0)))}${missing ? "*" : ""}`] },
+      ...items.map(line => ({ key: line.id, values: [...(general ? [line.mainSupplierName || line.supplierName || "Не указан"] : []), dateTime(line.postedAt), String(line.number), line.deliveredBy || "Не указан", line.material.name, number(line.grossKg), number(line.returnedKg), number(line.discountKg), `${number(line.discountPercent)}%`, number(line.percentDiscountKg ?? 0), number(new Decimal(line.grossKg).minus(line.returnedKg).minus(line.discountKg).minus(line.percentDiscountKg ?? 0)), line.priceKnown ? number(line.unitPricePerKg) : "—", line.priceKnown ? number(line.amount) : "—"] })),
+      { key: `total:${currency}`, total: true, values: [...(general ? ["Все поставщики"] : []), "ИТОГО", "—", "—", "Все материалы", number(sum("grossKg")), number(sum("returnedKg")), number(sum("discountKg")), "—", number(sum("percentDiscountKg")), number(sum("grossKg").minus(sum("returnedKg")).minus(sum("discountKg")).minus(sum("percentDiscountKg"))), "—", `${number(items.filter(line => line.priceKnown).reduce((total,line) => total.plus(line.amount),new Decimal(0)))}${missing ? "*" : ""}`] },
     ];
   };
-  if (!posted.length) return <Empty text="За выбранный период приходов поставщика нет." />;
+  if (!posted.length) return <Empty text={general ? "За выбранный период приходов нет." : "За выбранный период приходов поставщика нет."} />;
   return <>
     <Card style={{ padding: 10 }}>
-      <Text style={[s.text, { fontWeight: "700", marginBottom: 6 }]}>Расчёт с поставщиком · {supplier}</Text>
-      {Platform.OS === "web" && <Btn secondary title={pdfBusy ? "Формируем PDF…" : "Скачать PDF для поставщика"} onPress={() => { void download(); }} disabled={pdfBusy} />}
+      <Text style={[s.text, { fontWeight: "700", marginBottom: 6 }]}>{general ? "Общий расчёт · все поставщики" : `Расчёт с поставщиком · ${supplier}`}</Text>
+      {!general && Platform.OS === "web" && <Btn secondary title={pdfBusy ? "Формируем PDF…" : "Скачать PDF для поставщика"} onPress={() => { void download(); }} disabled={pdfBusy} />}
       {!!pdfError && <Text accessibilityRole="alert" style={s.error}>{pdfError}</Text>}
       <Text style={[s.muted, { fontSize: 11, marginBottom: 10 }]}>{period} · время Ташкента</Text>
       {currencies.map(currency => <View key={currency} style={{ marginBottom: 12 }}>
         <Text style={[s.text, { fontWeight: "700", marginBottom: 6 }]}>{currency}</Text>
-        <CompactReportTable headers={["Дата поступления", "Приход №", "Кто привёз", "Сырьё", "Получено кг", "Возврат кг", "Скидка кг", "Скидка %", "Скидка % в кг", "Чистыми кг", "Цена за кг", "Сумма"]} widths={[20, 10, 18, 20, 12, 12, 12, 12, 14, 14, 14, 22]} rows={settlementRows(currency)} />
+        <CompactReportTable headers={[...(general ? ["Поставщик"] : []), "Дата поступления", "Приход №", "Кто привёз", "Сырьё", "Получено кг", "Возврат кг", "Скидка кг", "Скидка %", "Скидка % в кг", "Чистыми кг", "Цена за кг", "Сумма"]} widths={[...(general ? [22] : []), 20, 10, 18, 20, 12, 12, 12, 12, 14, 14, 14, 22]} rows={settlementRows(currency)} />
       </View>)}
       <Text style={[s.muted, { fontSize: 11 }]}>Чистыми = получено − возврат − скидка в кг − процентная скидка в кг. Сумма каждой строки рассчитана по её собственной цене. Оплаты и авансы здесь не учитываются. * — сумма неполная: есть приходы без цены.</Text>
     </Card>
-    <ReceiptSummaryCard lines={posted} period={period} supplier={supplier} title="Итоги для оплаты по сырью" />
+    <ReceiptSummaryCard lines={posted} period={period} supplier={supplier} title={general ? "Общие итоги для оплаты по сырью" : "Итоги для оплаты по сырью"} />
   </>;
 }
 
@@ -1306,7 +1291,7 @@ export function Workspace({
   const visibleReceiptLines = rows("purchase-lines").filter(line => {
     const time = new Date(line.postedAt).getTime();
     return time >= stockPeriod.from && time <= stockPeriod.to
-      && (!stockSupplier || (line.mainSupplierName ?? line.supplierName) === stockSupplier)
+      && (stockReport === "general" || !stockSupplier || (line.mainSupplierName ?? line.supplierName) === stockSupplier)
       && (!stockMaterial || receiptItemId(line) === stockMaterial);
   });
   const visibleStock = periodStock.filter(row => (!stockSupplier || supplierOf(row) === stockSupplier) && (!stockMaterial || row.lot.itemId === stockMaterial));
@@ -1589,8 +1574,9 @@ export function Workspace({
                           fields: loadingStock.map((r: any) => ({
                             ...weight(
                               `load_${r.id.split(":")[0]}`,
-                              `${r.name} · доступно ${fmt(r.quantity)} кг`,
+                              r.name,
                             ),
+                            stockAvailableKg: r.quantity.toString(),
                             required: false,
                           })),
                           submit: (v, send) => {
@@ -1665,7 +1651,8 @@ export function Workspace({
                             return send(`/batches/${b.id}/complete`, {
                               version: b.version,
                               locationId: mainStorage.id,
-                              handover: v._handover === "true",
+                              automaticShift: true,
+                              handover: true,
                               ...(v._handover === "true"
                                 ? {
                                     carryoverItemId: v.productId,
@@ -1755,7 +1742,7 @@ export function Workspace({
           </Pressable>)}
         </View>
         {stockReport === "average" && <ReceiptSummaryCard lines={visibleReceiptLines.filter(line => line.material.name.toLowerCase().includes(search.toLowerCase()))} period={stockReportPeriod} supplier={stockSupplier} />}
-        {stockReport === "supplier" && <SupplierSettlementReport lines={visibleReceiptLines.filter(line => line.material.name.toLowerCase().includes(search.toLowerCase()))} period={stockReportPeriod} supplier={stockSupplier} pdfFilters={{from:stockFrom?new Date(stockPeriod.from).toISOString():undefined,to:stockTo?new Date(stockPeriod.to).toISOString():undefined,itemId:stockMaterial||undefined,search:search.trim()||undefined}} />}
+        {(stockReport === "supplier" || stockReport === "general") && <SupplierSettlementReport key={stockReport} general={stockReport === "general"} lines={visibleReceiptLines.filter(line => line.material.name.toLowerCase().includes(search.toLowerCase()))} period={stockReportPeriod} supplier={stockReport === "general" ? "" : stockSupplier} pdfFilters={{from:stockFrom?new Date(stockPeriod.from).toISOString():undefined,to:stockTo?new Date(stockPeriod.to).toISOString():undefined,itemId:stockMaterial||undefined,search:search.trim()||undefined}} />}
         {stockReport === "average" && !visibleReceiptLines.some(line => line.status === "POSTED") && <Empty text="За выбранный период приходов нет." />}
         {inventoryView === "history" && <ReceiptHistory key={`${stockFrom}|${stockTo}|${stockSupplier}|${stockMaterial}`} lines={visibleReceiptLines} search={search} edit={setForm} />}
       </>}
@@ -1769,17 +1756,17 @@ export function Workspace({
                   </View>
                   <KeyboardAwareScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{padding:16}}>
                     <Text style={s.label}>Вид отчёта</Text>
-                    <MaterialDropdown label="Вид отчёта" disabled={false} options={[{id:"stock",name:"Остатки и история"},{id:"average",name:"Средняя цена сырья"},{id:"supplier",name:"Расчёт с поставщиком"}]} value={stockFilterDraft.report} onChange={report => setStockFilterDraft(d => ({...d,report}))} />
+                    <MaterialDropdown label="Вид отчёта" disabled={false} options={[{id:"stock",name:"Остатки и история"},{id:"average",name:"Средняя цена сырья"},{id:"supplier",name:"Расчёт с поставщиком"},{id:"general",name:"Общий расчёт"}]} value={stockFilterDraft.report} onChange={report => setStockFilterDraft(d => ({...d,report,...(report === "general" ? {supplier:""} : {})}))} />
                     <Text style={[s.label,{marginTop:12}]}>Период поступления · время Ташкента</Text>
                     <Text style={s.muted}>С даты и времени</Text>
                     <DateTimeField label="С даты и времени" value={stockFilterDraft.from} onChange={from => setStockFilterDraft(d => ({...d,from}))} />
                     <Text style={[s.muted,{marginTop:10}]}>По дату и время включительно</Text>
                     <DateTimeField label="По дату и время" value={stockFilterDraft.to} onChange={to => setStockFilterDraft(d => ({...d,to}))} />
-                    <Text style={[s.label,{marginTop:12}]}>Поставщик</Text>
-                    <MaterialDropdown label="Поставщик" disabled={false} options={[{id:"",name:"Все поставщики"},...stockSupplierOptions]} value={stockFilterDraft.supplier} onChange={supplier => setStockFilterDraft(d => ({...d,supplier}))} />
+                    {stockFilterDraft.report !== "general" && <><Text style={[s.label,{marginTop:12}]}>Поставщик</Text>
+                    <MaterialDropdown label="Поставщик" disabled={false} options={[{id:"",name:"Все поставщики"},...stockSupplierOptions]} value={stockFilterDraft.supplier} onChange={supplier => setStockFilterDraft(d => ({...d,supplier}))} /></>}
                     <Text style={[s.label,{marginTop:12}]}>Сырьё / материал</Text>
                     <MaterialDropdown label="Сырьё / материал" disabled={false} options={[{id:"",name:"Все материалы"},...stockMaterialOptions]} value={stockFilterDraft.material} onChange={material => setStockFilterDraft(d => ({...d,material}))} />
-                    <Text style={[s.muted,{marginTop:10}]}>Общие условия для остатков и истории приходов. Период — по дате поступления.</Text>
+                    <Text style={[s.muted,{marginTop:10}]}>{stockFilterDraft.report === "general" ? "Все поставщики за выбранный период. Возвраты и скидки учитываются отдельно, суммы — по ценам каждого прихода." : "Общие условия для остатков и истории приходов. Период — по дате поступления."}</Text>
                     {!!stockPeriodError && <Text accessibilityRole="alert" style={s.error}>{stockPeriodError}</Text>}
                   </KeyboardAwareScrollView>
                   <View style={{padding:16,borderTopWidth:1,borderColor:c.line}}>
@@ -1794,7 +1781,7 @@ export function Workspace({
               if (Number.isNaN(from) || Number.isNaN(to) || from > to) { setStockPeriodError("Проверьте даты: начало должно быть раньше конца периода."); return; }
               if (stockFilterDraft.report === "supplier" && !stockFilterDraft.supplier) { setStockPeriodError("Для расчёта выберите основного поставщика."); return; }
               setStockReport(stockFilterDraft.report);
-              setStockPeriod({from,to}); setStockFrom(stockFilterDraft.from); setStockTo(stockFilterDraft.to); setStockSupplier(stockFilterDraft.supplier); setStockMaterial(stockFilterDraft.material); setStockPeriodError(""); setStockFiltersOpen(false);
+              setStockPeriod({from,to}); setStockFrom(stockFilterDraft.from); setStockTo(stockFilterDraft.to); setStockSupplier(stockFilterDraft.report === "general" ? "" : stockFilterDraft.supplier); setStockMaterial(stockFilterDraft.material); setStockPeriodError(""); setStockFiltersOpen(false);
 
                     }} />
                     <Btn secondary title="Сбросить фильтры" onPress={() => { setStockFrom("");setStockTo("");setStockPeriod({from:-Infinity,to:Infinity});setStockSupplier("");setStockMaterial("");setStockReport("stock");setStockPeriodError("");setStockFiltersOpen(false); }} />

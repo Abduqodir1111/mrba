@@ -4,6 +4,7 @@ module.exports = ({ config }) => {
   if (release) validateReleaseApiUrl(process.env.EXPO_PUBLIC_API_URL);
   return {
     ...config,
+    plugins: [...(config.plugins ?? []), "@react-native-community/datetimepicker"],
     ios: {
       ...config.ios,
       buildNumber: config.ios?.buildNumber ?? "1",

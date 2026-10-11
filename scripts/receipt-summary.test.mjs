@@ -56,3 +56,22 @@ test("fully discounted receipt has physical stock but no payable weight", () => 
   assert.equal(group.payable.toString(), "0");
   assert.equal(group.pricedKg.toString(), "0");
 });
+
+test("general settlement combines suppliers by material without combining currencies or cancelled purchases", () => {
+  const groups = receiptSummary([
+    line({mainSupplierName:"Арслон"}),
+    line({mainSupplierName:"Хуснитдин",grossKg:"2000",returnedKg:"100",discountKg:"50",discountPercent:"0",percentDiscountKg:"0",amount:"111000000"}),
+    line({mainSupplierName:"Арслон",currency:"USD",amount:"8280"}),
+    line({mainSupplierName:"Хуснитдин",status:"REVERSED"}),
+  ]);
+  const uzs = groups.find(group => group.currency === "UZS");
+  assert.equal(groups.length, 2);
+  assert.equal(uzs.count, 2);
+  assert.equal(uzs.gross.toString(), "12000");
+  assert.equal(uzs.returned.toString(), "600");
+  assert.equal(uzs.manual.toString(), "350");
+  assert.equal(uzs.percent.toString(), "920");
+  assert.equal(uzs.total.toString(), "11400");
+  assert.equal(uzs.payable.toString(), "10130");
+  assert.equal(uzs.amount.toString(), "607800000");
+});

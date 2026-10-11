@@ -167,10 +167,18 @@ export class CorrectionsController {
           doc.status === "POSTED" && doc.type !== "REVERSAL",
           "Документ уже отменён или является сторно",
         );
-        ensure(doc.type !== "PURCHASE_CORRECTION", "Исправляйте приход через историю поступлений");
+        ensure(
+          doc.type !== "PURCHASE_CORRECTION",
+          "Исправляйте приход через историю поступлений",
+        );
         if (doc.type === "PURCHASE_RECEIPT") {
-          const amended = await tx.purchaseRevision.count({ where: { line: { lot: { stockLot: { originDocumentId: id } } } } });
-          ensure(!amended, "У прихода есть корректировки. Используйте историю поступлений для возврата.");
+          const amended = await tx.purchaseRevision.count({
+            where: { line: { lot: { stockLot: { originDocumentId: id } } } },
+          });
+          ensure(
+            !amended,
+            "У прихода есть корректировки. Используйте историю поступлений для возврата.",
+          );
         }
         ensure(
           !doc.shipment?.departedAt,
@@ -193,6 +201,48 @@ export class CorrectionsController {
           ensure(
             b.shift.status === "OPEN",
             "Перед отменой завершения откройте смену",
+          );
+        }
+        const command = await tx.commandReceipt.findUniqueOrThrow({
+          where: { commandId: doc.commandId },
+        });
+        const result = command.result as {
+          automaticShift?: boolean;
+          transferredBatches?: { batchId: string; nextBatchId: string }[];
+        };
+        const transferred = result.automaticShift
+          ? (result.transferredBatches ?? [])
+          : [];
+        for (const transfer of transferred) {
+          const child = await tx.productionBatch.findUniqueOrThrow({
+            where: { id: transfer.nextBatchId },
+          });
+          ensure(
+            child.status === "IN_PROGRESS",
+            "Сначала отмените операции следующей смены",
+          );
+          ensure(
+            !(await tx.businessDocument.count({
+              where: { batchId: child.id, status: "POSTED" },
+            })),
+            "В следующую смену уже внесены операции. Сначала отмените их",
+          );
+          const movedLots = doc.movements
+            .filter(
+              (m) =>
+                m.locationId === child.wipLocationId &&
+                m.signedQuantityKg.gt(0),
+            )
+            .map((m) => m.lotId);
+          ensure(
+            !(await tx.inventoryBalance.count({
+              where: {
+                locationId: child.wipLocationId,
+                onHandKg: { gt: 0 },
+                lotId: { notIn: movedLots },
+              },
+            })),
+            "Следующая смена содержит другой металл",
           );
         }
         const carryChild =
@@ -266,6 +316,16 @@ export class CorrectionsController {
             where: { id: carryChild.id },
             data: { status: "CANCELLED", version: { increment: 1 } },
           });
+        for (const transfer of transferred) {
+          await tx.productionBatch.update({
+            where: { id: transfer.batchId },
+            data: { status: "REVERSED", version: { increment: 1 } },
+          });
+          await tx.productionBatch.update({
+            where: { id: transfer.nextBatchId },
+            data: { status: "CANCELLED", version: { increment: 1 } },
+          });
+        }
         return { id: key, reversesId: id, reason: dto.reason };
       },
     );

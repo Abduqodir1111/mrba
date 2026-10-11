@@ -1565,3 +1565,147 @@ test("receipt keeps main supplier separate from delivery person for every materi
 
   await post("/purchase-receipts", {...payload, deliveredBy: "x".repeat(151)}, randomUUID(), 400);
 });
+
+test("automatic completion hands over the whole shift atomically, including zero residue, without warehouse debits", async () => {
+  const a = await handoverFixture("1000");
+  const b = await handoverFixture("700");
+  const startsAt = new Date("2037-02-01T03:00:00Z");
+  startsAt.setUTCDate(startsAt.getUTCDate() + (await db.shiftInstance.count()));
+  const shift = await db.shiftInstance.create({
+    data: {
+      startsAt,
+      endsAt: new Date(startsAt.getTime() + 12 * 3600000),
+      businessDate: startsAt.toISOString().slice(0, 10),
+      code: "DAY",
+      name: "Automatic test",
+    },
+  });
+  await db.productionBatch.updateMany({
+    where: { id: { in: [a.id, b.id] } },
+    data: { shiftId: shift.id },
+  });
+  const before = await db.inventoryBalance.findMany({
+    where: { locationId: location },
+    orderBy: { lotId: "asc" },
+  });
+  const payload = {
+    version: 1,
+    locationId: location,
+    automaticShift: true,
+    carryoverItemId: product,
+    outputs: [{ itemId: product, quantityKg: "1000" }],
+  };
+  const key = randomUUID();
+  await post(
+    `/batches/${a.id}/complete`,
+    { ...payload, lossKg: "1" },
+    randomUUID(),
+    409,
+  );
+  assert.equal(
+    (await db.shiftInstance.findUniqueOrThrow({ where: { id: shift.id } }))
+      .status,
+    "OPEN",
+  );
+  assert.equal(
+    (await db.productionBatch.findUniqueOrThrow({ where: { id: b.id } }))
+      .status,
+    "IN_PROGRESS",
+  );
+  const response = await post(`/batches/${a.id}/complete`, payload, key);
+  assert.equal(response.body.lossKg, "0");
+  assert.equal(response.body.carryoverKg, "0");
+  assert.equal(response.body.nextBatchId, null);
+  assert.equal(response.body.transferredBatches.length, 1);
+  assert.equal(response.body.transferredBatches[0].quantityKg, "700");
+  assert.equal(
+    (await db.shiftInstance.findUniqueOrThrow({ where: { id: shift.id } }))
+      .status,
+    "CLOSED",
+  );
+  const child = await db.productionBatch.findUniqueOrThrow({
+    where: { id: response.body.transferredBatches[0].nextBatchId },
+  });
+  const balances = await db.inventoryBalance.findMany({
+    where: { locationId: child.wipLocationId },
+  });
+  assert.equal(
+    balances
+      .reduce((sum, r) => sum.plus(r.onHandKg), new Prisma.Decimal(0))
+      .toString(),
+    "700",
+  );
+  assert.equal(
+    (
+      await db.inventoryBalance.findMany({
+        where: { locationId: b.wipLocationId },
+      })
+    ).every((r) => r.onHandKg.isZero()),
+    true,
+  );
+  assert.deepEqual(
+    await db.inventoryBalance.findMany({
+      where: { locationId: location },
+      orderBy: { lotId: "asc" },
+    }),
+    before,
+  );
+  assert.equal(
+    await db.stockMovement.count({
+      where: {
+        documentId: key,
+        locationId: location,
+        signedQuantityKg: { lt: 0 },
+      },
+    }),
+    0,
+  );
+  assert.deepEqual(
+    (await post(`/batches/${a.id}/complete`, payload, key)).body,
+    response.body,
+  );
+  // Another completion transfers the entire residual with no implicit 1% loss.
+  const second = await post(`/batches/${child.id}/complete`, {
+    version: child.version,
+    locationId: location,
+    automaticShift: true,
+    carryoverItemId: product,
+    outputs: [],
+  });
+  assert.equal(second.body.carryoverKg, "700");
+  assert.equal(second.body.lossKg, "0");
+});
+
+test("automatic handover rolls back every kettle on reservations and reverses all transferred batches together", async () => {
+  const a = await handoverFixture("600");
+  const b = await handoverFixture("400");
+  const startsAt = new Date("2040-02-01T03:00:00Z");
+  startsAt.setUTCDate(startsAt.getUTCDate() + await db.shiftInstance.count());
+  const shift = await db.shiftInstance.create({ data: { startsAt, endsAt: new Date(startsAt.getTime() + 43200000), businessDate: startsAt.toISOString().slice(0, 10), code: "DAY", name: "Automatic reversal test" } });
+  await db.productionBatch.updateMany({ where: { id: { in: [a.id, b.id] } }, data: { shiftId: shift.id } });
+  const balance = await db.inventoryBalance.findFirstOrThrow({ where: { locationId: b.wipLocationId, onHandKg: { gt: 0 } } });
+  await db.inventoryBalance.update({ where: { lotId_locationId: { lotId: balance.lotId, locationId: balance.locationId } }, data: { reservedKg: "1" } });
+  const payload = { version: 1, automaticShift: true, locationId: location, carryoverItemId: product, outputs: [{ itemId: product, quantityKg: "200" }] };
+  const key = randomUUID();
+  await post(`/batches/${a.id}/complete`, payload, key, 409);
+  assert.equal(await db.businessDocument.count({ where: { id: key } }), 0);
+  assert.equal((await db.productionBatch.findUniqueOrThrow({ where: { id: a.id } })).status, "IN_PROGRESS");
+  assert.equal((await db.inventoryBalance.aggregate({ where: { locationId: a.wipLocationId }, _sum: { onHandKg: true } }))._sum.onHandKg?.toString(), "600");
+  await db.inventoryBalance.update({ where: { lotId_locationId: { lotId: balance.lotId, locationId: balance.locationId } }, data: { reservedKg: "0" } });
+  const result = (await post(`/batches/${a.id}/complete`, payload, key)).body;
+  const next = await db.productionBatch.findUniqueOrThrow({ where: { id: result.nextBatchId } });
+  assert.equal(result.carryoverKg, "400");
+  assert.equal(result.lossKg, "0");
+  await post(`/documents/${key}/reverse`, { reason: "Closed shift protection" }, randomUUID(), 409);
+  await post(`/shifts/${shift.id}/reopen`, { reason: "Reverse test handover" });
+  await post(`/documents/${key}/reverse`, { reason: "Reverse entire handover" });
+  for (const parent of [a, b]) {
+    const weight = (await db.inventoryBalance.aggregate({ where: { locationId: parent.wipLocationId }, _sum: { onHandKg: true } }))._sum.onHandKg;
+    assert.equal(weight?.toString(), parent.id === a.id ? "600" : "400");
+  }
+  for (const id of [next.id, result.transferredBatches[0].nextBatchId]) {
+    const child = await db.productionBatch.findUniqueOrThrow({ where: { id } });
+    assert.equal(child.status, "CANCELLED");
+    assert.equal((await db.inventoryBalance.findMany({ where: { locationId: child.wipLocationId } })).every(r => r.onHandKg.isZero()), true);
+  }
+});
