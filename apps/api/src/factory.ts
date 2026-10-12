@@ -173,6 +173,12 @@ class CompleteDto extends VersionDto {
   @Type(() => OutputDto)
   outputs!: OutputDto[];
 }
+class KettleRecoveryDto extends VersionDto {
+  @IsString() @Matches(/^\d{1,12}$/) quantityKg!: string;
+  @IsUUID() itemId!: string;
+  @IsString() @Matches(/\S/) @MaxLength(1000) reason!: string;
+}
+
 @Injectable()
 export class FactoryService {
   constructor(
@@ -188,6 +194,44 @@ export class FactoryService {
     run: (tx: Tx) => Promise<Prisma.InputJsonObject>,
   ) {
     return this.ops.command(actor, id, epoch, type, dto, run);
+  }
+  async recoverKettle(actor: string, key: string, epoch: string, id: string, dto: KettleRecoveryDto) {
+    return this.action(actor, key, epoch, "KETTLE_RECOVERY", { id, ...dto }, async tx => {
+      await lock(tx, `batch:${id}`);
+      const batch = await tx.productionBatch.findUniqueOrThrow({ where: { id }, include: { equipment: true } });
+      ensure(batch.status === "IN_PROGRESS", "Плавка уже закрыта");
+      ensure(batch.version === dto.version, "Данные изменились. Обновите раздел");
+      const rows = await tx.inventoryBalance.findMany({ where: { locationId: batch.wipLocationId, onHandKg: { gt: 0 } }, include: { lot: { include: { originDocument: true, transformationOutput: true } } } });
+      await balancesLock(tx, rows);
+      ensure(rows.length && rows.every(r => r.reservedKg.eq(0)), "В котле нет свободного металла");
+      const expected = rows.reduce((a, r) => a.plus(r.onHandKg), decimal("0"));
+      const actual = decimal(kg(dto.quantityKg));
+      const carryovers = rows.filter(r => r.lot.isCarryover);
+      let sourceId: string | undefined;
+      if (carryovers.length) {
+        ensure(rows.length === 1 && carryovers.length === 1, "Остаток смешан с новым сырьём. Пересчёт исходной плавки недоступен");
+        const row = carryovers[0];
+        ensure(row.lot.originDocument.type === "PRODUCTION_COMPLETE" && row.lot.originDocument.status === "POSTED" && row.lot.transformationOutput?.quantityKg.eq(expected), "Остаток уже частично использован. Пересчёт исходной плавки недоступен");
+        sourceId = row.lot.originDocumentId;
+        await lock(tx, `document:${sourceId}`);
+        ensure(!await tx.businessDocument.count({ where: { recoverySourceId: sourceId, status: "POSTED" } }), "Остаток этой плавки уже возвращён");
+      }
+      const item = await tx.item.findUniqueOrThrow({ where: { id: dto.itemId } });
+      ensure(item.isActive && item.kind !== "WASTE", "Выберите сырьё или металл, пригодный для повторной плавки");
+      const destination = await tx.stockLocation.findFirstOrThrow({ where: { name: "Основной склад", kind: "STORAGE", warehouse: { siteId: batch.equipment.siteId } } });
+      await tx.businessDocument.create({ data: { id: key, commandId: key, type: "KETTLE_RECOVERY", batchId: id, reason: dto.reason, recoverySourceId: sourceId, adjustmentBeforeKg: expected, adjustmentAfterKg: actual, differenceKg: actual.minus(expected) } });
+      for (const row of rows) {
+        await movement(tx, key, row.lotId, batch.wipLocationId, row.onHandKg.negated(), "KETTLE_RECOVERY_INPUT");
+        await tx.transformationInput.create({ data: { documentId: key, lotId: row.lotId, quantityKg: row.onHandKg } });
+      }
+      const lot = await tx.stockLot.create({ data: { itemId: item.id, stockKind: "MATERIAL", originDocumentId: key } });
+      await movement(tx, key, lot.id, destination.id, actual, "KETTLE_RECOVERY_OUTPUT");
+      await tx.transformationOutput.create({ data: { documentId: key, lotId: lot.id, quantityKg: actual } });
+      await tx.productionBatch.update({ where: { id }, data: { status: "RETURNED", completedAt: new Date(), version: { increment: 1 } } });
+      const costing = new Costing(tx);
+      const unitCost = await costing.unit(lot.id);
+      return { id: key, lotId: lot.id, expectedKg: expected.toString(), actualKg: actual.toString(), differenceKg: actual.minus(expected).toString(), unitCost, returnedCost: scaleCost(unitCost, actual) };
+    });
   }
   async transfer(actor: string, id: string, epoch: string, dto: TransferDto) {
     return this.action(actor, id, epoch, "TRANSFER", dto, async (tx) => {
@@ -787,7 +831,8 @@ export class FactoryController {
           nextBatch: { select: { id: true, number: true } },
           inputs: { include: { lot: { include: { item: true } } } },
           outputs: { include: { lot: { include: { item: true } } } },
-          wipLocation: { include: { balances: true } },
+          documents: { where: { status: "POSTED" }, include: { kettleRecoveries: { where: { status: "POSTED" } } } },
+          wipLocation: { include: { balances: { include: { lot: { include: { originDocument: true, transformationOutput: true } } } } } },
         },
         orderBy: { startedAt: "desc" },
       },
@@ -806,7 +851,28 @@ export class FactoryController {
                 quantityKg: r.onHandKg,
               }))
           : batch.inputs;
-      const totalCost = await costing.total(inputs);
+      let totalCost = await costing.total(inputs);
+      const completion = batch.documents.find((d: any) => d.type === "PRODUCTION_COMPLETE");
+      const adjustment = (completion?.kettleRecoveries ?? []).reduce((a: Prisma.Decimal, r: any) => a.plus(r.differenceKg ?? 0), decimal("0"));
+      const effectiveCarryoverKg = batch.carryoverKg.plus(adjustment);
+      const recovered = batch.documents.find((d: any) => d.type === "KETTLE_RECOVERY");
+      const recoveryOutputs = recovered ? await this.db.transformationOutput.findMany({ where: { documentId: recovered.id } }) : [];
+      if (recovered) totalCost = await costing.total(recoveryOutputs);
+      const activeRows = batch.wipLocation.balances.filter((r: any) => r.onHandKg.gt(0));
+      let recoveryPreview = null;
+      if (batch.status === "IN_PROGRESS" && activeRows.length) {
+        const expectedKg = activeRows.reduce((a: Prisma.Decimal, r: any) => a.plus(r.onHandKg), decimal("0"));
+        const carry = activeRows.filter((r: any) => r.lot.isCarryover);
+        const eligible = !carry.length || (activeRows.length === 1 && carry[0].lot.originDocument.status === "POSTED" && carry[0].lot.transformationOutput?.quantityKg.eq(expectedKg));
+        let originalCost = totalCost;
+        let productKg = decimal("0");
+        if (carry.length === 1 && eligible) {
+          const source = await this.db.businessDocument.findUniqueOrThrow({ where: { id: carry[0].lot.originDocumentId }, include: { transformationInputs: true, transformationOutputs: { include: { lot: { include: { item: true } } } } } });
+          originalCost = await costing.total(source.transformationInputs);
+          productKg = source.transformationOutputs.filter(o => !o.lot.isCarryover && o.lot.item.kind === "PRODUCT").reduce((a, o) => a.plus(o.quantityKg), decimal("0"));
+        }
+        recoveryPreview = { eligible, expectedKg: expectedKg.toString(), productKg: productKg.toString(), originalCost, itemId: activeRows[0].lot.itemId };
+      }
       const goodKg = batch.outputs
         .filter(
           (o: { lot: { item: { kind: string } } }) =>
@@ -815,9 +881,10 @@ export class FactoryController {
         .reduce(
           (a: Prisma.Decimal, o: { quantityKg: Prisma.Decimal }) =>
             a.plus(o.quantityKg),
-          batch.carryoverKg,
+          effectiveCarryoverKg,
         );
       const unitCost =
+        recovered && recoveryOutputs.length ? await costing.unit(recoveryOutputs[0].lotId) :
         batch.status === "COMPLETED" && goodKg.gt(0)
           ? {
               known: totalCost.known,
@@ -829,12 +896,23 @@ export class FactoryController {
               ),
             }
           : null;
+      const valuedInputs = [];
+      for (const input of batch.inputs) {
+        const inputUnitCost = await costing.unit(input.lotId);
+        valuedInputs.push({ ...input, unitCost: inputUnitCost, totalCost: scaleCost(inputUnitCost, input.quantityKg) });
+      }
       valued.push({
         ...batch,
+        inputs: valuedInputs,
         totalCost,
+        recoveryPreview,
+        recovery: recovered ? { id: recovered.id, expectedKg: recovered.adjustmentBeforeKg, actualKg: recovered.adjustmentAfterKg, differenceKg: recovered.differenceKg, reason: recovered.reason } : null,
+        carryoverRecovered: !!completion?.kettleRecoveries.length,
+        recordedCarryoverKg: batch.carryoverKg,
+        carryoverKg: effectiveCarryoverKg,
         unitCost,
         carryoverValue: unitCost
-          ? scaleCost(unitCost, batch.carryoverKg)
+          ? scaleCost(unitCost, effectiveCarryoverKg)
           : null,
       });
     }
@@ -993,12 +1071,12 @@ export class FactoryController {
             where: { id: line.itemId },
           });
           ensure(
-            item.isActive && ["MATERIAL", "WASTE"].includes(item.kind),
+            item.isActive && (["MATERIAL", "WASTE"].includes(item.kind) || lots.some(l => l.itemId === item.id && l.stockKind === "MATERIAL")),
             "Выберите доступное сырьё или отходы",
           );
           let remaining = decimal(kg(line.quantityKg));
           total = total.plus(remaining);
-          for (const lot of lots.filter((l) => l.itemId === item.id)) {
+          for (const lot of lots.filter((l) => l.itemId === item.id && (l.stockKind ?? l.item.kind) !== "PRODUCT")) {
             const balance = await tx.inventoryBalance.findUniqueOrThrow({
               where: {
                 lotId_locationId: { lotId: lot.id, locationId: source.id },
@@ -1349,6 +1427,13 @@ export class FactoryController {
       },
     );
   }
+  @Post("batches/:id/recover") recoverKettle(
+    @Req() req: AuthRequest,
+    @Headers("idempotency-key") key: string,
+    @Headers("x-recovery-epoch") epoch: string,
+    @Param("id", new ParseUUIDPipe()) id: string,
+    @Body() dto: KettleRecoveryDto,
+  ) { return this.factory.recoverKettle(req.actor.id, key, epoch, id, dto); }
   @Post("batches/:id/complete") complete(
     @Req() req: AuthRequest,
     @Headers("idempotency-key") key: string,

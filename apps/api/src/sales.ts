@@ -463,6 +463,7 @@ export class SalesController {
               where: { id: a.lotId },
             });
             ensure(!lot.isCarryover, "Металл в котле ещё не выпущен на склад");
+            ensure((lot.stockKind ?? item.kind) === item.kind, "Возвращённый металл находится на складе сырья и требует повторной плавки");
             ensure(lot.itemId === item.id, "Партия не соответствует позиции");
             const loc = await tx.stockLocation.findUniqueOrThrow({
               where: { id: a.locationId },

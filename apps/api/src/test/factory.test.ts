@@ -1,3 +1,4 @@
+import { Costing, scaleCost, addCosts } from "../costing";
 import { Prisma } from "@prisma/client";
 import "reflect-metadata";
 import { before, after, test } from "node:test";
@@ -1708,4 +1709,91 @@ test("automatic handover rolls back every kettle on reservations and reverses al
     assert.equal(child.status, "CANCELLED");
     assert.equal((await db.inventoryBalance.findMany({ where: { locationId: child.wipLocationId } })).every(r => r.onHandKg.isZero()), true);
   }
+});
+
+
+async function kettleRecoveryFixture() {
+  const b = await handoverFixture("18003");
+  const current = await db.productionBatch.findUniqueOrThrow({ where: { id: b.id } });
+  const completed = (await post(`/batches/${b.id}/complete`, {
+    version: current.version, locationId: location, handover: true, carryoverItemId: product, lossKg: "0",
+    outputs: [{ itemId: product, quantityKg: "15000" }, { itemId: waste, quantityKg: "1600" }],
+  })).body;
+  const child = await db.productionBatch.findUniqueOrThrow({ where: { id: completed.nextBatchId } });
+  const productOutput = await db.productionOutput.findFirstOrThrow({ where: { batchId: b.id, lot: { itemId: product } } });
+  return { b, completed, child, productOutput };
+}
+
+test("kettle return reprices original products and actual recovered metal, preserves total cost, and can reverse", async () => {
+  const { b, completed, child, productOutput } = await kettleRecoveryFixture();
+  const key = randomUUID();
+  const payload = { version: child.version, itemId: product, quantityKg: "1300", reason: "Broken kettle, actual weighing" };
+  const attempts = await Promise.all([rawPost(`/batches/${child.id}/recover`, payload, key), rawPost(`/batches/${child.id}/recover`, payload, key)]);
+  assert.deepEqual(attempts.map(r => r.status), [201, 201]);
+  const result = attempts[0].body;
+  assert.equal(result.expectedKg, "1403");
+  assert.equal(result.differenceKg, "-103");
+  assert.equal((await db.productionBatch.findUniqueOrThrow({ where: { id: child.id } })).status, "RETURNED");
+  assert.equal((await db.productionBatch.findUniqueOrThrow({ where: { id: b.id } })).carryoverKg.toString(), "1403");
+  const costing = new Costing(db);
+  const expectedUnit = new Prisma.Decimal("36006").div("16300");
+  const productUnit = await costing.unit(productOutput.lotId);
+  assert.equal(productUnit.amounts.UZS, expectedUnit.toString());
+  assert.equal((await costing.unit(result.lotId)).amounts.UZS, expectedUnit.toString());
+  const combined = addCosts([scaleCost(productUnit, "15000"), result.returnedCost]);
+  assert.ok(new Prisma.Decimal(combined.amounts.UZS).minus("36006").abs().lt("0.000000001"));
+  const batches = (await request(app.getHttpServer()).get("/api/v1/batches?limit=100").set("Authorization", `Bearer ${token}`).expect(200)).body.items;
+  const originalCard = batches.find((r: any) => r.id === b.id);
+  assert.equal(originalCard.carryoverKg, "1300");
+  assert.equal(originalCard.recordedCarryoverKg, "1403");
+  assert.equal(originalCard.inputs[0].unitCost.amounts.UZS, "2");
+  assert.equal(originalCard.inputs[0].totalCost.amounts.UZS, "36006");
+  const returnedCard = batches.find((r: any) => r.id === child.id);
+  assert.equal(returnedCard.totalCost.amounts.UZS, result.returnedCost.amounts.UZS);
+  const report = (await request(app.getHttpServer()).get(`/api/v1/reports?equipmentId=${b.equipmentId}`).set("Authorization", `Bearer ${token}`).expect(200)).body;
+  assert.equal(report.production.carryoverKg, "1300");
+  assert.equal(report.production.recoveryDifferenceKg, "-103");
+  assert.equal(report.production.lossKg, "0");
+  const outputLot = await db.stockLot.findUniqueOrThrow({ where: { id: result.lotId } });
+  assert.equal(outputLot.stockKind, "MATERIAL");
+  await post(`/batches/${child.id}/recover`, payload, randomUUID(), 409);
+  await post(`/documents/${completed.id}/reverse`, { reason: "must not reverse source" }, randomUUID(), 409);
+  await post(`/documents/${key}/reverse`, { reason: "incorrect weighing" });
+  assert.equal((await db.productionBatch.findUniqueOrThrow({ where: { id: child.id } })).status, "IN_PROGRESS");
+  assert.equal((await new Costing(db).unit(productOutput.lotId)).amounts.UZS, new Prisma.Decimal("36006").div("16403").toString());
+  const restored = await db.inventoryBalance.aggregate({ where: { locationId: child.wipLocationId }, _sum: { onHandKg: true } });
+  assert.equal(restored._sum.onHandKg?.toString(), "1403");
+  const fresh = await db.productionBatch.findUniqueOrThrow({ where: { id: child.id } });
+  const retry = (await post(`/batches/${child.id}/recover`, { ...payload, version: fresh.version, quantityKg: "1500" })).body;
+  assert.equal(retry.differenceKg, "97");
+  assert.equal((await new Costing(db).unit(productOutput.lotId)).amounts.UZS, new Prisma.Decimal("36006").div("16500").toString());
+  const next = (await post("/batches", { equipmentId: child.equipmentId })).body;
+  await post(`/batches/${next.id}/load`, { lines: [{ itemId: product, quantityKg: "1500" }] });
+  await post(`/documents/${retry.id}/reverse`, { reason: "already reused" }, randomUUID(), 409);
+  const loaded = await db.inventoryBalance.findFirstOrThrow({ where: { locationId: next.wipLocationId, onHandKg: { gt: 0 } } });
+  assert.equal(loaded.lotId, retry.lotId);
+});
+
+test("kettle return rejects zero, stale versions and mixed carryover without mutating stock", async () => {
+  const { child } = await kettleRecoveryFixture();
+  const payload = { version: child.version, itemId: product, quantityKg: "1300", reason: "Broken kettle" };
+  await post(`/batches/${child.id}/recover`, { ...payload, quantityKg: "0" }, randomUUID(), 409);
+  await post(`/batches/${child.id}/recover`, { ...payload, version: 999 }, randomUUID(), 409);
+  const materialId = (await post("/materials", { name: `mixed ${randomUUID()}` })).body.id;
+  await post("/purchase-receipts", { currency: "UZS", lines: [{ materialId, quantity: "100", unit: "kg", unitPricePerKg: "2" }] });
+  await post(`/batches/${child.id}/load`, { lines: [{ itemId: materialId, quantityKg: "100" }] });
+  const fresh = await db.productionBatch.findUniqueOrThrow({ where: { id: child.id } });
+  await post(`/batches/${child.id}/recover`, { ...payload, version: fresh.version }, randomUUID(), 409);
+  assert.equal(await db.businessDocument.count({ where: { batchId: child.id, type: "KETTLE_RECOVERY" } }), 0);
+});
+
+test("kettle return before production preserves all raw input value without closing other kettles", async () => {
+  const b = await handoverFixture("1000");
+  const current = await db.productionBatch.findUniqueOrThrow({ where: { id: b.id } });
+  const result = (await post(`/batches/${b.id}/recover`, { version: current.version, itemId: material, quantityKg: "900", reason: "Broken kettle" })).body;
+  assert.equal(result.returnedCost.amounts.UZS, "2000");
+  assert.equal(result.differenceKg, "-100");
+  const shift = await db.shiftInstance.findUniqueOrThrow({ where: { id: current.shiftId } });
+  assert.equal(shift.status, "OPEN");
+  assert.equal(await db.productionBatch.count({ where: { previousBatchId: b.id } }), 0);
 });

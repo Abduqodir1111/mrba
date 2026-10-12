@@ -136,6 +136,7 @@ export class ReportsController {
             shiftId: q.shiftId,
           },
           include: {
+            documents: { where: { type: "PRODUCTION_COMPLETE", status: "POSTED" }, include: { kettleRecoveries: { where: { status: "POSTED" } } } },
             equipment: true,
             shift: true,
             nextBatch: { select: { id: true } },
@@ -251,10 +252,11 @@ export class ReportsController {
                 (sum, b) =>
                   b.nextBatch && includedBatches.has(b.nextBatch.id)
                     ? sum
-                    : sum.plus(b.carryoverKg),
+                    : sum.plus(b.carryoverKg).plus(b.documents.flatMap(d => d.kettleRecoveries).reduce((a, r) => a.plus(r.differenceKg ?? 0), decimal("0"))),
                 decimal("0"),
               )
               .toString(),
+            recoveryDifferenceKg: batches.flatMap(b => b.documents.flatMap(d => d.kettleRecoveries)).reduce((a, r) => a.plus(r.differenceKg ?? 0), decimal("0")).toString(),
             productKg: product.toString(),
             wasteKg: wasteTotal.toString(),
             lossKg: batches

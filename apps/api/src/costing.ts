@@ -61,7 +61,7 @@ export class Costing {
         };
     } else if (
       lot &&
-      ["PRODUCTION_COMPLETE", "WASTE_RECOVERY"].includes(
+      ["PRODUCTION_COMPLETE", "WASTE_RECOVERY", "KETTLE_RECOVERY"].includes(
         lot.originDocument.type,
       )
     ) {
@@ -74,15 +74,17 @@ export class Costing {
         result = zero();
       else {
         const nextPath = new Set(path).add(lotId);
-        result = await this.documentUnit(lot.originDocumentId, nextPath);
+        // A weighed carryover recovery shares the ORIGINAL melt's revised unit
+        // cost. Scaling the old carryover value alone would leave product costs wrong.
+        result = await this.documentUnit(lot.originDocument.recoverySourceId ?? lot.originDocumentId, nextPath);
       }
     }
     this.lots.set(lotId, result);
     return result;
   }
-  private async documentUnit(
+  async documentUnit(
     id: string,
-    path: Set<string>,
+    path: Set<string> = new Set(),
   ): Promise<Valuation> {
     const cached = this.documents.get(id);
     if (cached) return cached;
@@ -90,11 +92,14 @@ export class Costing {
       where: { id },
       include: {
         transformationInputs: true,
+        kettleRecoveries: { where: { status: "POSTED", type: "KETTLE_RECOVERY" } },
         transformationOutputs: {
           include: { lot: { include: { item: true } } },
         },
       },
     });
+    // Keep historical quantities immutable; a posted recovery replaces only the
+    // expected carryover weight in this melt's useful-weight denominator.
     const weight = doc.transformationOutputs
       .filter(
         (o) =>
@@ -102,7 +107,8 @@ export class Costing {
           o.lot.isCarryover ||
           o.lot.item.kind === "PRODUCT",
       )
-      .reduce((a, o) => a.plus(o.quantityKg), new Prisma.Decimal(0));
+      .reduce((a, o) => a.plus(o.quantityKg), new Prisma.Decimal(0))
+      .plus(doc.kettleRecoveries.reduce((a, r) => a.plus(r.differenceKg ?? 0), new Prisma.Decimal(0)));
     const inputs: Valuation[] = [];
     for (const input of doc.transformationInputs)
       inputs.push(

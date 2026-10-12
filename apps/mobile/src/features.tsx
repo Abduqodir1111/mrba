@@ -1,3 +1,4 @@
+import { CompletedMeltDetails } from "./completed-melt-details";
 import { savePdf } from "./save-pdf";
 import { DateTimeField } from "./date-time-field";
 import { receiptPreview, receiptSummary } from "./receipt-preview";
@@ -94,6 +95,7 @@ const documentName = (v: string) =>
       CONTRACT_CREATE: "Создание договора",
       CONTRACT_AMEND: "Изменение договора",
       SHIPMENT_DEPART: "Выезд машины",
+      KETTLE_RECOVERY: "Возврат металла из котла",
       SHIFT_CLOSE: "Закрытие смены",
       SHIFT_REOPEN: "Открытие смены",
       RESERVE: "Резерв",
@@ -104,6 +106,7 @@ const status = (v: string) =>
   ({
     IN_PROGRESS: "В работе",
     COMPLETED: "Завершена",
+    RETURNED: "Металл возвращён",
     CANCELLED: "Отменена",
     REVERSED: "Отменён",
     POSTED: "Проведён",
@@ -285,12 +288,14 @@ type Form = {
   allowHandover?: boolean;
   loadingSummary?: boolean;
   saleStock?: Record<string, string>;
+  recoverySummary?: { expectedKg: string; productKg: string; originalCost: CostValue };
   receiptSummary?: { materialName: string; grossKg: string; minimumReturn: string; priceRequired: boolean };
   allowDraft?: boolean;
   submit: (values: Record<string, string>, send: typeof mutate) => Promise<any>;
 };
 const actionLabels: Record<string, string> = {
   "Продажа продукции": "Продать",
+  "Возврат металла из котла": "Вернуть на склад",
   "Загрузка плавки": "Загрузить",
   "Результат плавки": "Завершить плавку",
   "Новая плавка": "Начать плавку",
@@ -733,6 +738,23 @@ function Editor({
                     )}
                 </View>
               )}
+              {form.recoverySummary && (() => {
+                const summary = form.recoverySummary;
+                const actual = enteredWeight(values.quantityKg)?.times(weightUnit === "t" ? 1000 : 1);
+                const useful = actual?.plus(summary.productKg);
+                const unitCost = useful?.gt(0) ? { known: summary.originalCost.known, amounts: Object.fromEntries(Object.entries(summary.originalCost.amounts).map(([currency, amount]) => [currency, new Decimal(amount).div(useful).toString()])) } : null;
+                const cost = (quantity: Decimal.Value) => unitCost ? { known: unitCost.known, amounts: Object.fromEntries(Object.entries(unitCost.amounts).map(([currency, amount]) => [currency, new Decimal(amount).times(quantity).toString()])) } : null;
+                return <View style={{ padding: 14, backgroundColor: c.softBlue, borderRadius: 14, marginBottom: 16 }}>
+                  <Row label="Расчётный остаток" value={`${fmt(summary.expectedKg)} кг`} />
+                  <Row label="Стоимость исходной плавки" value={costText(summary.originalCost)} />
+                  <Row label="Выпущенная продукция" value={`${fmt(summary.productKg)} кг`} />
+                  <Row label="Разница фактического веса" value={actual ? `${fmt(actual.minus(summary.expectedKg))} кг` : "—"} />
+                  <Row label="Новая цена за кг" value={costText(unitCost, true)} />
+                  <Row label="Стоимость возврата" value={costText(actual ? cost(actual) : null)} />
+                  <Row label="Стоимость продукции" value={costText(cost(summary.productKg))} />
+                  <Text style={s.muted}>Стоимость плавки распределяется между продукцией и фактически возвращённым металлом. Разница веса фиксируется отдельно.</Text>
+                </View>;
+              })()}
               {form.loadingSummary && (
                 <Row
                   label="Всего к загрузке"
@@ -1325,7 +1347,7 @@ export function Workspace({
     rows("stock")
       .filter(
         (r) =>
-          r.location.name === "Основной склад" && r.lot.item.kind !== "PRODUCT",
+          r.location.name === "Основной склад" && stockKind(r) !== "PRODUCT",
       )
       .reduce((groups: Map<string, any>, r: any) => {
         const key = `${r.lot.itemId}:${r.locationId}`;
@@ -1497,7 +1519,7 @@ export function Workspace({
               }
             />
           )}
-          {!rows("batches").some((b) => b.status === batchFilter) && !busy && (
+          {!rows("batches").some((b) => (b.status === batchFilter || (batchFilter === "COMPLETED" && b.status === "RETURNED"))) && !busy && (
             <Empty
               text={
                 batchFilter === "IN_PROGRESS"
@@ -1507,7 +1529,7 @@ export function Workspace({
             />
           )}
           {rows("batches")
-            .filter((b) => b.status === batchFilter)
+            .filter((b) => (b.status === batchFilter || (batchFilter === "COMPLETED" && b.status === "RETURNED")))
             .map((b) => (
               <Card key={b.id}>
                 <View style={s.row}>
@@ -1517,6 +1539,8 @@ export function Workspace({
                 <Text style={s.muted}>{b.number}</Text>
                 <Row label={b.shift.name} value={b.shift.businessDate} />
                 <Row label="Начало" value={date(b.startedAt)} />
+                {b.status === "COMPLETED" && <Row label="Завершение" value={date(b.completedAt)} />}
+                {b.status === "COMPLETED" ? <CompletedMeltDetails batch={b} /> : <>
                 <Row
                   label="Стоимость сырья и остатка"
                   value={costText(b.totalCost)}
@@ -1526,7 +1550,7 @@ export function Workspace({
                 )}
                 {b.carryoverValue && new Decimal(b.carryoverKg).gt(0) && (
                   <Row
-                    label="Стоимость переданного остатка"
+                    label={b.carryoverRecovered ? "Стоимость возврата на склад" : "Стоимость переданного остатка"}
                     value={costText(b.carryoverValue)}
                   />
                 )}
@@ -1538,10 +1562,11 @@ export function Workspace({
                 )}
                 {new Decimal(b.carryoverKg ?? 0).gt(0) && (
                   <Row
-                    label="Передано следующей смене"
+                    label={b.carryoverRecovered ? "Фактически возвращено на склад" : "Передано следующей смене"}
                     value={`${fmt(b.carryoverKg)} кг`}
                   />
                 )}
+                </>}
                 {b.status === "IN_PROGRESS" && (
                   <>
                     <Row
@@ -1675,6 +1700,25 @@ export function Workspace({
                         })
                       }
                     />
+                    {b.recoveryPreview && <Btn
+                      title="Вернуть металл на склад"
+                      secondary
+                      onPress={() => {
+                        const preview = b.recoveryPreview;
+                        if (!preview.eligible) { Alert.alert("Возврат недоступен", "Остаток уже частично использован или смешан с новым сырьём. Пересчёт исходной плавки невозможен."); return; }
+                        setForm({
+                          title: "Возврат металла из котла",
+                          subtitle: "Фактически взвесьте извлечённый металл. Возврат закроет только этот котёл; следующая смена автоматически не открывается.",
+                          recoverySummary: preview,
+                          fields: [
+                            { ...weight("quantityKg", "Фактически извлечено"), value: preview.expectedKg },
+                            { key: "itemId", label: "Металл для повторной плавки", dropdown: true, required: true, value: preview.itemId, options: options(rows("items").filter(i => i.isActive && i.kind !== "WASTE")) },
+                            { key: "reason", label: "Причина возврата", required: true, editableComment: true, value: "Поломка котла" },
+                          ],
+                          submit: (v, send) => send(`/batches/${b.id}/recover`, { version: b.version, quantityKg: v.quantityKg, itemId: v.itemId, reason: v.reason }),
+                        });
+                      }}
+                    />}
                     <Btn
                       title="Отменить плавку"
                       danger
@@ -1688,20 +1732,12 @@ export function Workspace({
                     />
                   </>
                 )}
-                {b.status === "COMPLETED" && (
-                  <Row
-                    label="Безвозвратные потери"
-                    value={`${fmt(b.differenceKg ?? "0")} кг`}
-                  />
-                )}
-                {b.status === "COMPLETED" &&
-                  b.outputs.map((o: any) => (
-                    <Row
-                      key={o.id}
-                      label={o.lot.item.name}
-                      value={`${fmt(o.quantityKg)} кг`}
-                    />
-                  ))}
+                {b.recovery && <>
+                  <Row label="Расчётный остаток" value={`${fmt(b.recovery.expectedKg)} кг`} />
+                  <Row label="Возвращено на склад" value={`${fmt(b.recovery.actualKg)} кг`} />
+                  <Row label="Разница веса" value={`${fmt(b.recovery.differenceKg)} кг`} />
+                  <Text style={s.muted}>{b.recovery.reason}</Text>
+                </>}
               </Card>
             ))}
           <Text style={s.section}>Смены</Text>
@@ -3439,6 +3475,8 @@ export function Reports() {
               value={`${fmt(data.production.productKg)} кг`}
             />
             <Row label="Отходы" value={`${fmt(data.production.wasteKg)} кг`} />
+            <Row label="Остаток / возвращённый металл" value={`${fmt(data.production.carryoverKg ?? "0")} кг`} />
+            {new Decimal(data.production.recoveryDifferenceKg ?? "0").isZero() ? null : <Row label="Уточнение веса при извлечении" value={`${fmt(data.production.recoveryDifferenceKg)} кг`} />}
             <Row
               label="Безвозвратные потери"
               value={`${fmt(data.production.lossKg ?? "0")} кг`}

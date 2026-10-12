@@ -260,6 +260,9 @@ model StockLot {
   @@index([itemId, createdAt])
 }
 model BusinessDocument {
+  recoverySourceId String? @db.Uuid
+  recoverySource BusinessDocument? @relation("KettleRecoverySource", fields: [recoverySourceId], references: [id], onDelete: Restrict)
+  kettleRecoveries BusinessDocument[] @relation("KettleRecoverySource")
   purchaseRevision PurchaseRevision?
   id String @id @db.Uuid
   commandId String @unique @db.Uuid
@@ -285,6 +288,7 @@ model BusinessDocument {
   adjustmentBeforeKg Decimal? @db.Decimal(20,3)
   adjustmentAfterKg Decimal? @db.Decimal(20,3)
   shipment Shipment?
+  @@index([recoverySourceId])
   @@index([type, occurredAt])
 }
 model StockReservation {

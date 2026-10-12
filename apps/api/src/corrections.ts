@@ -171,6 +171,7 @@ export class CorrectionsController {
           doc.type !== "PURCHASE_CORRECTION",
           "Исправляйте приход через историю поступлений",
         );
+        ensure(!await tx.businessDocument.count({ where: { recoverySourceId: id, status: "POSTED" } }), "Сначала отмените возврат металла из котла");
         if (doc.type === "PURCHASE_RECEIPT") {
           const amended = await tx.purchaseRevision.count({
             where: { line: { lot: { stockLot: { originDocumentId: id } } } },
@@ -188,8 +189,10 @@ export class CorrectionsController {
           const b = await tx.productionBatch.findUniqueOrThrow({
             where: { id: bid },
           });
+          if (doc.type === "KETTLE_RECOVERY")
+            ensure(!await tx.productionBatch.count({ where: { equipmentId: b.equipmentId, status: "IN_PROGRESS", id: { not: b.id } } }), "В этом котле уже начата новая плавка. Сначала отмените её");
           ensure(
-            doc.type === "PRODUCTION_COMPLETE" || b.status === "IN_PROGRESS",
+            ["PRODUCTION_COMPLETE", "KETTLE_RECOVERY"].includes(doc.type) || b.status === "IN_PROGRESS",
             "Плавка закрыта; сначала отмените её завершение",
           );
         }
@@ -306,6 +309,8 @@ export class CorrectionsController {
           where: { id },
           data: { status: "REVERSED", version: { increment: 1 } },
         });
+        if (doc.type === "KETTLE_RECOVERY" && doc.batchId)
+          await tx.productionBatch.update({ where: { id: doc.batchId }, data: { status: "IN_PROGRESS", completedAt: null, version: { increment: 1 } } });
         if (doc.type === "PRODUCTION_COMPLETE" && doc.batchId)
           await tx.productionBatch.update({
             where: { id: doc.batchId },
