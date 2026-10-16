@@ -27,7 +27,7 @@ async function raw(path: string, options: RequestInit = {}) {
   try {
     return await fetch(`${environmentUrl(API_URL, environment)}${path}`, {
       ...options,
-      signal: AbortSignal.timeout(12000),
+      signal: AbortSignal.timeout(path.startsWith("/month-closes") ? 90000 : 12000),
       headers: { "Content-Type": "application/json", ...options.headers },
     });
   } catch {

@@ -1,3 +1,4 @@
+import { assertCurrentStockDocument } from "./stock-period";
 import {
   Body,
   Controller,
@@ -163,6 +164,8 @@ export class CorrectionsController {
           where: { id },
           include: { movements: true, shipment: true },
         });
+        await assertCurrentStockDocument(tx,id);
+        ensure(!["MONTH_CLOSE", "MONTH_OPENING"].includes(doc.type), "Ввод остатков изменяется через инвентаризацию");
         ensure(
           doc.status === "POSTED" && doc.type !== "REVERSAL",
           "Документ уже отменён или является сторно",

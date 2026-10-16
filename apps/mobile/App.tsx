@@ -1,3 +1,5 @@
+import { MonthClosing } from "./src/month-closing";
+import { RawGroupCard } from "./src/raw-group-card";
 import { DateTimeField } from "./src/date-time-field";
 import {
   KeyboardAwareScrollView,
@@ -47,6 +49,7 @@ function openPublicPage(url: string) {
 type Tab = "Главная" | "Склад" | "Производство" | "Продажи" | "Ещё";
 type Named = { id: string; name: string };
 type Dashboard = {
+  openingPending?: boolean;
   site: { city: string };
   owner: string;
   shift: { name: string; hours: string };
@@ -60,6 +63,7 @@ type Dashboard = {
   purchases: number;
   materials: number;
   suppliers: number;
+  openPeriodStartedAt?: string | null;
   purchasePeriod?: { from: string; to: string };
   purchaseAmounts: { currency: string; amount: string; unpriced?: number }[];
   recent: any[];
@@ -198,7 +202,7 @@ function FactoryApp() {
   const [busy, setBusy] = useState(false);
   const [tab, setTab] = useState<Tab>("Главная");
   const [moreView, setMoreView] = useState<
-    "menu" | "reports" | "management" | "leads"
+    "menu" | "reports" | "management" | "leads" | "monthClosing"
   >("menu");
   const [data, setData] = useState<Dashboard | null>(null);
   const [workspaceRefresh, setWorkspaceRefresh] = useState(0);
@@ -455,20 +459,14 @@ function FactoryApp() {
       >
         {tab === "Главная" && (
           <>
+            {data?.openingPending&&<View style={[s.currencyCard,{padding:16,marginBottom:16}]}><Text style={s.rowTitle}>Нужен пересчёт складов</Text><Text style={s.footnote}>Месяц закрыт, склады обнулены. Введите фактические остатки: «Ещё → Закрытие месяца».</Text></View>}
             <View style={[s.currencyCard, { padding: 20, gap: 16 }]}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 9 }}>
                 <Icon name="albums-outline" color={c.blue} size={20} />
                 <Text style={s.rowTitle}>Сырьё по группам</Text>
               </View>
-              <View style={{ flexDirection: "row", gap: 12 }}>
-                {[{ id: "KIZIL", name: "Кизил", color: "#AB4B39", bg: "#FFF1EC" }, { id: "SARIK", name: "Сарик", color: "#927024", bg: "#FFF8E5" }].map(group => {
-                  const kg = data?.rawStockGroups?.find(row => row.category === group.id)?.quantityKg;
-                  return <View key={group.id} style={{ flex: 1, minWidth: 0, backgroundColor: group.bg, borderRadius: 16, padding: 14, gap: 7 }}>
-                    <Text style={{ fontSize: 15, fontWeight: "700", color: group.color }}>{group.name}</Text>
-                    <Text adjustsFontSizeToFit numberOfLines={1} style={{ fontSize: 24, fontWeight: "700", color: c.ink }}>{kg !== undefined ? format(new Decimal(kg).div(1000).toString()) : "—"} т</Text>
-                    <Text style={s.muted}>{kg !== undefined ? `${format(kg)} кг` : "Загрузка"}</Text>
-                  </View>;
-                })}
+              <View style={{ gap: 12 }}>
+                {[{ id: "KIZIL", name: "Кизил" }, { id: "SARIK", name: "Сарик" }].map(group => <RawGroupCard key={group.id} category={group.id} name={group.name} quantityKg={data?.rawStockGroups?.find(row=>row.category===group.id)?.quantityKg} refreshKey={data?.generatedAt} />)}
               </View>
               <Text style={s.footnote}>Основной склад · распределение задаёт владелец в «Ещё → Контроль»</Text>
               {data?.ungroupedRawKg && new Decimal(data.ungroupedRawKg).gt(0) && <Text style={s.footnote}>Без группы: {format(data.ungroupedRawKg)} кг</Text>}
@@ -625,7 +623,7 @@ function FactoryApp() {
             <Text style={s.footnote}>
               {purchasePeriod && data?.purchasePeriod
                 ? `${new Date(data.purchasePeriod.from).toLocaleString("ru-RU", { timeZone: "Asia/Tashkent", day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })} — ${new Date(data.purchasePeriod.to).toLocaleString("ru-RU", { timeZone: "Asia/Tashkent", day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}`
-                : "Текущий месяц"} · Каждая валюта учитывается отдельно
+                : data?.openPeriodStartedAt && data.purchasePeriod ? `Открытый период с ${new Date(data.purchasePeriod.from).toLocaleDateString("ru-RU", { timeZone: "Asia/Tashkent" })}` : "Текущий месяц"} · Каждая валюта учитывается отдельно
               {!!data?.purchaseAmounts.some((x) => x.unpriced) && " · Есть приходы без цены"}
             </Text>
           </>
@@ -668,6 +666,7 @@ function FactoryApp() {
               />
             )}
             {moreView === "reports" && <Reports />}
+            {moreView === "monthClosing" && <MonthClosing onChanged={() => void reload()} onInventory={() => setTab("Склад")} />}
             {moreView === "management" && (
               <Workspace
                 section="management"
@@ -682,7 +681,7 @@ function FactoryApp() {
                   <View style={s.profileAvatar}>
                     <Text style={s.profileLetter}>В</Text>
                   </View>
-                  <View>
+                  <View style={{ flex: 1, minWidth: 0 }}>
                     <Text style={s.sectionTitle}>
                       {data?.owner ?? "Владелец"}
                     </Text>
@@ -695,6 +694,13 @@ function FactoryApp() {
                     title="Отчёты"
                     subtitle="Выпуск, отходы и продажи"
                     onPress={() => setMoreView("reports")}
+                  />
+                  <Action
+                    icon="calendar-outline"
+                    title="Закрытие месяца"
+                    subtitle="Итоги, остатки и архив"
+                    onPress={() => setMoreView("monthClosing")}
+                    disabled={!canWrite}
                   />
                   <Action
                     icon="settings-outline"
@@ -849,13 +855,16 @@ function Action({
       accessibilityRole="button"
       disabled={disabled}
       onPress={onPress}
-      style={[s.action, disabled && { opacity: 0.5 }]}
+      style={({ pressed }) => [s.action, disabled && s.actionDisabled, pressed && !disabled && { backgroundColor: c.softBlue }]}
     >
       <View style={s.actionIcon}>
-        <Icon name={icon} color={c.blue} />
+        <Icon name={icon} color={disabled ? c.muted : c.blue} />
       </View>
-      <Text style={s.actionTitle}>{title}</Text>
-      <Text style={s.actionSubtitle}>{subtitle}</Text>
+      <View style={s.actionBody}>
+        <Text style={[s.actionTitle, disabled && { color: c.muted }]}>{title}</Text>
+        <Text style={s.actionSubtitle}>{subtitle}</Text>
+      </View>
+      {!disabled && <Icon name="chevron-forward" color={c.muted} size={18} />}
     </Pressable>
   );
 }
@@ -1352,19 +1361,23 @@ const s = StyleSheet.create({
     letterSpacing: -0.3,
   },
   link: { fontSize: 12, fontWeight: "600", color: c.blue },
-  actions: { flexDirection: "row", gap: 12 },
+  actions: { gap: 10, alignSelf: "stretch" },
   action: {
-    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    minHeight: 88,
     borderWidth: 1,
     borderColor: c.line,
     backgroundColor: "white",
     borderRadius: 18,
     padding: 16,
-    gap: 6,
+    gap: 14,
   },
-  actionIcon: { marginBottom: 7 },
-  actionTitle: { fontSize: 14, fontWeight: "600", color: c.ink },
-  actionSubtitle: { fontSize: 11, color: c.muted },
+  actionDisabled: { backgroundColor: "#F7F8FA" },
+  actionIcon: { width: 44, height: 44, flexShrink: 0, borderRadius: 14, backgroundColor: c.softBlue, alignItems: "center", justifyContent: "center" },
+  actionBody: { flex: 1, minWidth: 0, gap: 4 },
+  actionTitle: { fontSize: 16, lineHeight: 22, fontWeight: "600", color: c.ink },
+  actionSubtitle: { fontSize: 12, lineHeight: 18, color: c.muted },
   currencyCard: {
     borderWidth: 1,
     borderColor: c.line,

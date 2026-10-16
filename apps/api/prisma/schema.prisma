@@ -201,6 +201,8 @@ model StockMovement {
   @@index([lotId, postedAt])
 }
 model CommandReceipt {
+  reportingPeriodId String? @db.Uuid
+  @@index([reportingPeriodId])
   commandId String @id @db.Uuid
   actorId String @db.Uuid
   actor User @relation(fields: [actorId], references: [id], onDelete: Restrict)
@@ -239,6 +241,7 @@ model Item {
   @@unique([name, kind])
 }
 model StockLot {
+  openingUnitCost Json?
   isCarryover Boolean @default(false)
   stockKind String?
   id String @id @default(uuid()) @db.Uuid
@@ -589,4 +592,18 @@ model PurchaseRevision {
   priceKnown Boolean
   amount Decimal @db.Decimal(35,9)
   @@unique([lineId, version])
+}
+
+model MonthClose {
+  stockReset Boolean @default(false)
+  id String @id @db.Uuid
+  number Int @unique
+  previousId String? @db.Uuid
+  from DateTime @db.Timestamptz
+  to DateTime @db.Timestamptz
+  closedBy String @db.Uuid
+  ownerName String
+  snapshot Json
+  createdAt DateTime @default(now()) @db.Timestamptz
+  @@index([createdAt])
 }

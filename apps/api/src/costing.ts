@@ -48,7 +48,9 @@ export class Costing {
       },
     });
     let result: Valuation = { known: false, amounts: {} };
-    if (lot?.purchaseLot) {
+    if (lot?.originDocument.type === "MONTH_OPENING" && lot.openingUnitCost) {
+      result = lot.openingUnitCost as unknown as Valuation;
+    } else if (lot?.purchaseLot) {
       const line = effectivePurchase(lot.purchaseLot.line);
       if (line.quantityKg.gt(0))
         result = {

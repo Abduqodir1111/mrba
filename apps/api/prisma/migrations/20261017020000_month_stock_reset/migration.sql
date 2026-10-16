@@ -1,0 +1,2 @@
+ALTER TABLE "StockLot" ADD COLUMN "openingUnitCost" JSONB;
+ALTER TABLE "MonthClose" ADD COLUMN "stockReset" BOOLEAN NOT NULL DEFAULT false;

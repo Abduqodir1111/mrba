@@ -1,3 +1,4 @@
+import { assertCurrentStockDocument } from "./stock-period";
 import { effectivePurchase, revisionInclude } from "./purchase-values";
 import { Costing, scaleCost } from "./costing";
 import { Query } from "@nestjs/common";
@@ -145,7 +146,7 @@ class ReserveDto extends LotDto {
 class AdjustDto {
   @IsUUID() lotId!: string;
   @IsUUID() locationId!: string;
-  @IsString() @Matches(/^\d{1,12}$/) countedKg!: string;
+  @IsString() @Matches(/^\d{1,12}(?:\.\d{1,3})?$/) countedKg!: string;
   @IsInt() @Min(1) version!: number;
   @IsString() @Matches(/\S/) @MaxLength(1000) reason!: string;
 }
@@ -1232,7 +1233,11 @@ export class FactoryController {
           },
         });
         ensure(b.version === dto.version, "Остаток изменился, обновите данные");
-        const q = kg(dto.countedKg, true);
+        const lot = await tx.stockLot.findUniqueOrThrow({where:{id:dto.lotId}});
+        await assertCurrentStockDocument(tx,lot.originDocumentId);
+        const counted = new Prisma.Decimal(dto.countedKg);
+        ensure(counted.gte(0) && counted.decimalPlaces() <= 3, "Укажите фактический вес до 0,001 кг");
+        const q = counted.toString();
         const delta = decimal(q).minus(b.onHandKg);
         ensure(!delta.isZero(), "Остаток совпадает");
         await tx.businessDocument.create({

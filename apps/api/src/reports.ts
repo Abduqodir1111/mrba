@@ -1,3 +1,4 @@
+import { effectivePurchase, revisionInclude } from "./purchase-values";
 import { page, PageQuery } from "./pagination";
 import {
   Controller,
@@ -7,11 +8,12 @@ import {
   Query,
   UseGuards,
 } from "@nestjs/common";
-import { IsDateString, IsOptional, IsUUID } from "class-validator";
+import { IsDateString, IsIn, IsOptional, IsUUID } from "class-validator";
 import { Database } from "./db";
 import { AccessGuard, Allow } from "./identity";
 import { decimal, ensure } from "./factory";
 class Filters {
+  @IsOptional() @IsIn(["true", "false"]) currentPeriod?: string;
   @IsOptional() @IsDateString() from?: string;
   @IsOptional() @IsDateString() to?: string;
   @IsOptional() @IsUUID() equipmentId?: string;
@@ -36,10 +38,11 @@ export class ReportsController {
     const end = new Date(`${q.to}T00:00:00+05:00`);
     ensure(from <= end, "Начало периода должно быть не позже окончания");
     const to = new Date(end.getTime() + 86400000);
+    const lastClose = q.currentPeriod === "true" ? await this.db.monthClose.findFirst({ orderBy: { number: "desc" }, select: { id: true } }) : null;
     const lines = await this.db.shipmentLine.findMany({
       where: {
         shipment: {
-          document: { status: "POSTED", occurredAt: { gte: from, lt: to } },
+          document: { status: "POSTED", occurredAt: { gte: from, lt: to }, ...(lastClose ? { command: { reportingPeriodId: lastClose.id } } : {}) },
         },
       },
       select: {
@@ -113,24 +116,28 @@ export class ReportsController {
     const period = { gte: from, lt: to };
     return this.db.$transaction(
       async (tx) => {
-        const purchases = await tx.purchaseReceipt.findMany({
+        const closedPeriod = !q.from && !q.to ? await tx.monthClose.findFirst({ orderBy: { number: "desc" }, select: { id: true, to: true } }) : null;
+        const command = closedPeriod ? { reportingPeriodId: closedPeriod.id } : undefined;
+        const purchaseRows = await tx.purchaseReceipt.findMany({
           where: {
             postedAt: period,
             supplierId: q.supplierId,
             lines: {
               some: {
-                lot: { stockLot: { originDocument: { status: "POSTED" } } },
+                lot: { stockLot: { originDocument: { status: "POSTED", command } } },
               },
             },
           },
-          include: { supplier: true, lines: { include: { material: true } } },
+          include: { supplier: true, lines: { include: { material: true, revisions: revisionInclude } } },
         });
+        const purchases = purchaseRows.map(r => ({ ...r, lines: r.lines.map(l => { const effective = effectivePurchase(l); return { ...effective, currency: effective.currency ?? r.currency }; }) }));
         const batches = await tx.productionBatch.findMany({
           where: {
             ...((!q.from || q.from.length === 10) &&
             (!q.to || q.to.length === 10)
               ? { shift: { businessDate: { gte: q.from, lt: q.to } } }
               : { completedAt: period }),
+            ...(command ? { documents: { some: { type: "PRODUCTION_COMPLETE", status: "POSTED", command } } } : {}),
             status: "COMPLETED",
             equipmentId: q.equipmentId,
             shiftId: q.shiftId,
@@ -149,7 +156,7 @@ export class ReportsController {
           include: { location: true, lot: { include: { item: true } } },
         });
         const movements = await tx.stockMovement.findMany({
-          where: { postedAt: period },
+          where: { postedAt: period, document: command ? { command } : undefined },
           include: {
             lot: { include: { item: true } },
             location: true,
@@ -160,7 +167,7 @@ export class ReportsController {
         const shipments = await tx.shipment.findMany({
           where: {
             customerId: q.customerId,
-            document: { occurredAt: period, status: "POSTED" },
+            document: { occurredAt: period, status: "POSTED", command },
           },
           include: {
             customer: true,
@@ -218,12 +225,7 @@ export class ReportsController {
           }
         const purchaseAmounts = ["UZS", "USD"].map((currency) => ({
           currency,
-          amount: purchases
-            .filter((p) => p.currency === currency)
-            .reduce(
-              (a, p) => p.lines.reduce((v, l) => v.plus(l.amount), a),
-              decimal("0"),
-            )
+          amount: purchases.flatMap(p => p.lines).filter(l => l.currency === currency).reduce((a,l) => a.plus(l.amount), decimal("0"))
             .toString(),
         }));
         const saleAmounts = ["UZS", "USD"].map((currency) => ({
@@ -239,7 +241,7 @@ export class ReportsController {
         return {
           generatedAt: new Date().toISOString(),
           timezone: "Asia/Tashkent",
-          period: { from: from?.toISOString(), toExclusive: to?.toISOString() },
+          period: { from: from?.toISOString() ?? closedPeriod?.to.toISOString(), toExclusive: to?.toISOString(), current: !q.from && !q.to },
           purchases,
           purchaseAmounts,
           stock,

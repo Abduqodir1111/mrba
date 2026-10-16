@@ -2192,10 +2192,7 @@ export function Workspace({
                                     "Инвентаризация",
                                     "/inventory/adjust",
                                     [
-                                      weight(
-                                        "countedKg",
-                                        "Фактический остаток",
-                                      ),
+                                      { ...weight("countedKg", "Фактический остаток"), fractionalWeight: true },
                                       reason,
                                     ],
                                     (v) => ({
@@ -3187,7 +3184,7 @@ function SalesSummary() {
     setBusy(true);
     setError("");
     setData(null);
-    api<SalesSummaryData>(`/reports/sales?from=${range.from}&to=${range.to}`)
+    api<SalesSummaryData>(`/reports/sales?from=${range.from}&to=${range.to}&currentPeriod=${preset === "month"}`)
       .then((result) => {
         if (active) setData(result);
       })
@@ -3200,7 +3197,7 @@ function SalesSummary() {
     return () => {
       active = false;
     };
-  }, [range]);
+  }, [range, preset]);
   const apply = () => {
     const parse = (value: string) => {
       if (!/^\d{2}\.\d{2}\.\d{4}$/.test(value)) return null;
@@ -3379,12 +3376,8 @@ export function Reports() {
   const [data, setData] = useState<any>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [from, setFrom] = useState(
-    new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10),
-  );
-  const [to, setTo] = useState(
-    new Date(Date.now() + 86400000).toISOString().slice(0, 10),
-  );
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
   const load = async (selected = filters) => {
     setBusy(true);
     try {
@@ -3410,7 +3403,7 @@ export function Reports() {
   }, []);
   return (
     <View>
-      <Title title="Отчёты" sub="Масса, выпуск и продажи по данным завода" />
+      <Title title="Отчёты" sub="По умолчанию — текущий открытый период. Закрытые отчёты сохранены в архиве месяца." />
       <Card>
         <Text style={s.label}>Период · время Ташкента</Text>
         <TextInput

@@ -1,3 +1,4 @@
+import { MonthCloseController } from "./month-close";
 import "reflect-metadata";
 import {
   Catch,
@@ -88,6 +89,7 @@ class Errors implements ExceptionFilter {
     SalesController,
     RecoveryController,
     ReportsController,
+    MonthCloseController,
     CorrectionsController,
     AdminController,
     LeadAgentController,

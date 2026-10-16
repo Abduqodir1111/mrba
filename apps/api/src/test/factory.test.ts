@@ -1,3 +1,5 @@
+import { movement } from "../factory";
+import { OperationsService } from "../operations";
 import { Costing, scaleCost, addCosts } from "../costing";
 import { Prisma } from "@prisma/client";
 import "reflect-metadata";
@@ -50,6 +52,8 @@ before(async () => {
       })
       .expect(201)
   ).body.accessToken;
+  const recount = (await request(app.getHttpServer()).get("/api/v1/month-closes/opening").set("Authorization", `Bearer ${token}`).expect(200)).body;
+  if(recount.pending) await post("/month-closes/opening", {closeId:recount.closeId,lines:[]});
   supplier = (await post("/suppliers", { name: `F supplier ${suffix}` })).body
     .id;
   material = (await post("/materials", { name: `F copper ${suffix}` })).body.id;
@@ -1857,4 +1861,136 @@ test("fractional receipts and late returns preserve exact weight and cost", asyn
   const count = await db.purchaseReceipt.count();
   await post("/purchase-receipts", { currency: "UZS", lines: [{ materialId: id, quantity: "20.5001", unit: "kg" }] }, undefined, 409);
   assert.equal(await db.purchaseReceipt.count(), count);
+});
+
+test("raw group period report counts receipts once and separates returns discounts and unpriced lines", async () => {
+  const mat = (await post("/materials", { name: `Period group ${suffix}` })).body;
+  await post(`/catalog/materials/${mat.id}/edit`, { name: mat.name, isActive: true, version: 1, category: "KIZIL" });
+  const receipt = (await post("/purchase-receipts", { currency: "UZS", lines: [
+    { materialId: mat.id, quantity: "10.5", unit: "kg", returnedKg: "0.5", discountKg: "1", discountPercent: "10", unitPricePerKg: "100" },
+    { materialId: mat.id, quantity: "2", unit: "kg" },
+  ] })).body;
+  const saved = await db.purchaseReceipt.findUniqueOrThrow({ where: { id: receipt.id } });
+  const moment = saved.postedAt.toISOString();
+  const get = (category: string, from = moment, to = moment) => request(app.getHttpServer()).get(`/api/v1/dashboard/raw-group?category=${category}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`).set("Authorization", `Bearer ${token}`);
+  const report = (await get("KIZIL").expect(200)).body;
+  assert.equal(report.receipts, 1); assert.equal(report.lines, 2);
+  assert.equal(report.grossKg, "12.5"); assert.equal(report.acceptedKg, "12");
+  assert.equal(report.returnedKg, "0.5"); assert.equal(report.discountKg, "1.9");
+  assert.equal(report.payableKg, "10.1"); assert.equal(report.unpriced, 1);
+  assert.deepEqual(report.amounts, [{ currency: "UZS", amount: "810" }]);
+  const unpriced = await db.purchaseLine.findFirstOrThrow({ where: { receiptId: receipt.id, priceKnown: false } });
+  await post(`/purchase-lines/${unpriced.id}/amend`, { version: 0, currency: "USD", returnedKg: "0", discountKg: "0", discountPercent: "0", unitPricePerKg: "50" });
+  const repriced = (await get("KIZIL").expect(200)).body;
+  assert.equal(repriced.unpriced, 0); assert.equal(repriced.receipts, 1);
+  assert.deepEqual(repriced.amounts.sort((a: any,b: any)=>a.currency.localeCompare(b.currency)), [{ currency: "USD", amount: "100" }, { currency: "UZS", amount: "810" }]);
+  const cancelled = (await post("/purchase-receipts", { currency: "UZS", lines: [{ materialId: mat.id, quantity: "3", unit: "kg" }] })).body;
+  const cancelledReceipt = await db.purchaseReceipt.findUniqueOrThrow({ where: { id: cancelled.id } });
+  const cancelledLot = await db.stockLot.findFirstOrThrow({ where: { purchaseLot: { line: { receiptId: cancelled.id } } } });
+  await post(`/documents/${cancelledLot.originDocumentId}/reverse`, { reason: "Cancel test receipt" });
+  const cancelledMoment = cancelledReceipt.postedAt.toISOString();
+  assert.equal((await get("KIZIL", cancelledMoment, cancelledMoment).expect(200)).body.receipts, 0);
+
+  assert.equal((await get("SARIK").expect(200)).body.receipts, 0);
+  assert.equal((await get("KIZIL", "2000-01-01", "2000-01-02").expect(200)).body.receipts, 0);
+  await get("OTHER").expect(400); await get("KIZIL", "invalid").expect(400);
+  await get("KIZIL", "2100-01-01", "2000-01-01").expect(400);
+  await request(app.getHttpServer()).get(`/api/v1/dashboard/raw-group?category=KIZIL&from=${moment}&to=${moment}`).expect(401);
+});
+
+test("month closing zeros every warehouse, freezes valuations and requires an idempotent physical recount", async () => {
+  // Earlier scenarios deliberately leave active and reserved fixtures. Clear only
+  // these disposable test fixtures before exercising the independent close workflow.
+  await db.inventoryBalance.updateMany({data:{reservedKg:0}});
+  const cleanupId=randomUUID();
+  await app.get(OperationsService).command((await db.user.findUniqueOrThrow({where:{login:process.env.OWNER_LOGIN}})).id,cleanupId,epoch,"TEST_FIXTURE_RESET",{},async tx=>{
+    await tx.businessDocument.create({data:{id:cleanupId,commandId:cleanupId,type:"ADJUSTMENT",reason:"Clear disposable WIP test fixtures before independent monthly scenario"}});
+    const rows=await tx.inventoryBalance.findMany({where:{location:{kind:"WIP"},onHandKg:{gt:0}}});
+    for(const row of rows)await movement(tx,cleanupId,row.lotId,row.locationId,row.onHandKg.negated(),"ADJUSTMENT");
+    return {id:cleanupId};
+  });
+  await db.stockReservation.updateMany({where:{status:"ACTIVE"},data:{status:"RELEASED",remainingKg:0}});
+  await db.productionBatch.updateMany({where:{status:"IN_PROGRESS"},data:{status:"CANCELLED"}});
+  const list=(await request(app.getHttpServer()).get("/api/v1/month-closes").set("Authorization",`Bearer ${token}`).expect(200)).body;
+  // Finish a prior run's recount, if an interrupted test left one pending.
+  if(list[0]) {
+    const opening=(await request(app.getHttpServer()).get("/api/v1/month-closes/opening").set("Authorization",`Bearer ${token}`).expect(200)).body;
+    if(opening.pending)await post("/month-closes/opening",{closeId:list[0].id,lines:[]});
+  }
+  const previousId=list[0]?.id;
+  const mat=(await post("/materials",{name:`Month raw ${suffix}`})).body.id;
+  await post("/purchase-receipts",{currency:"UZS",lines:[{materialId:mat,quantity:"20.5",unit:"kg",unitPricePerKg:"100"}]});
+  const originalLot=await db.stockLot.findFirstOrThrow({where:{itemId:mat},include:{balances:true}});
+  const archiveProduct=(await post("/items",{name:`Opening product ${suffix}`,kind:"PRODUCT"})).body.id;
+  const payload=previousId?{previousId}:{};
+  // An active kettle or reservation must fail atomically, preserving balances.
+  const active=(await post("/batches",{equipmentId:equipment})).body;
+  await post(`/batches/${active.id}/load`,{lines:[{itemId:mat,quantityKg:"1"}]});
+  await post("/month-closes",payload,undefined,409);
+  await post(`/batches/${active.id}/cancel`,{reason:"Close fixture"});
+  const reservation=(await post("/inventory/reserve",{lotId:originalLot.id,locationId:location,quantityKg:"1",reason:"Close fixture"})).body;
+  await post("/month-closes",payload,undefined,409);
+  await post(`/reservations/${reservation.id}/release`,{reason:"Close fixture"});
+  const balancesBefore=await db.inventoryBalance.findMany();
+  const attempts=await Promise.all([rawPost("/month-closes",payload),rawPost("/month-closes",payload)]);
+  assert.deepEqual(attempts.map(r=>r.status).sort(),[201,409]);
+  const closed=attempts.find(r=>r.status===201)!.body;
+  assert.equal((await post("/month-closes",payload,closed.id)).body.id,closed.id);
+  assert.equal(await db.inventoryBalance.count({where:{OR:[{onHandKg:{not:0}},{reservedKg:{not:0}}]}}),0);
+  const saved=await db.monthClose.findUniqueOrThrow({where:{id:closed.id}}), archive=saved.snapshot as any;
+  assert.equal(saved.stockReset,true);
+  assert.ok(archive.closingStock.some((r:any)=>r.lot.itemId===mat&&r.onHandKg==="20.5"));
+  assert.equal(archive.closingStock.length,balancesBefore.filter(b=>b.onHandKg.gt(0)||b.reservedKg.gt(0)).length);
+  const dashboard=(await request(app.getHttpServer()).get("/api/v1/dashboard").set("Authorization",`Bearer ${token}`).expect(200)).body;
+  assert.equal(dashboard.stockKg,"0");assert.equal(dashboard.productStockKg,"0");assert.equal(dashboard.openingPending,true);assert.deepEqual(dashboard.purchaseAmounts,[]);
+  const current=(await request(app.getHttpServer()).get("/api/v1/reports").set("Authorization",`Bearer ${token}`).expect(200)).body;
+  assert.equal(current.purchases.length,0);assert.equal(current.shipments.length,0);assert.equal(current.production.batches.length,0);
+  await post("/month-closes",{previousId:closed.id},undefined,409);
+  await post("/purchase-receipts",{currency:"UZS",lines:[{materialId:mat,quantity:"1",unit:"kg"}]},undefined,409);
+  const line={itemId:mat,locationId:location,sourceLotId:originalLot.id,quantityKg:"18.25"};
+  await post("/month-closes/opening",{closeId:closed.id,lines:[line,line]},undefined,409);
+  assert.equal(await db.inventoryBalance.count({where:{onHandKg:{gt:0}}}),0);
+  await post("/month-closes/opening",{closeId:closed.id,lines:[{...line,quantityKg:"-1"}]},undefined,400);
+  await post("/month-closes/opening",{closeId:randomUUID(),lines:[line]},undefined,409);
+  const openingPayload={closeId:closed.id,lines:[line,{itemId:archiveProduct,locationId:salesLocation,quantityKg:"2.5",unitPricePerKg:"20",currency:"USD"}]};
+  const openings=await Promise.all([rawPost("/month-closes/opening",openingPayload),rawPost("/month-closes/opening",openingPayload)]);
+  assert.deepEqual(openings.map(r=>r.status).sort(),[201,409]);
+  const opening=openings.find(r=>r.status===201)!.body;
+  assert.equal((await post("/month-closes/opening",openingPayload,opening.id)).body.id,opening.id);
+  const newLot=await db.stockLot.findFirstOrThrow({where:{itemId:mat,originDocumentId:opening.id},include:{balances:true}});
+  assert.equal(newLot.balances[0].onHandKg.toString(),"18.25");
+  assert.deepEqual(await new Costing(db).unit(newLot.id),{known:true,amounts:{UZS:"100"}});
+  assert.deepEqual(scaleCost(await new Costing(db).unit(newLot.id),"18.25"),{known:true,amounts:{UZS:"1825"}});
+  const newProduct=await db.stockLot.findFirstOrThrow({where:{itemId:archiveProduct,originDocumentId:opening.id}});
+  assert.deepEqual(scaleCost(await new Costing(db).unit(newProduct.id),"2.5"),{known:true,amounts:{USD:"50"}});
+  await post(`/documents/${originalLot.originDocumentId}/reverse`,{reason:"Old receipt"},undefined,409);
+  await post(`/documents/${closed.id}/reverse`,{reason:"Reset"},undefined,409);
+  const oldBalance=await db.inventoryBalance.findUniqueOrThrow({where:{lotId_locationId:{lotId:originalLot.id,locationId:location}}});
+  await post("/inventory/adjust",{lotId:originalLot.id,locationId:location,countedKg:"1",version:oldBalance.version,reason:"Resurrect"},undefined,409);
+  const oldLine=archive.purchases.find((r:any)=>r.lines.some((l:any)=>l.materialId===mat)).lines.find((l:any)=>l.materialId===mat);
+  await post(`/purchase-lines/${oldLine.id}/amend`,{version:oldLine.version,currency:"UZS",returnedKg:"0",discountKg:"0",discountPercent:"0",unitPricePerKg:"101"},undefined,409);
+  assert.deepEqual((await db.monthClose.findUniqueOrThrow({where:{id:saved.id}})).snapshot,saved.snapshot);
+  await assert.rejects(db.$executeRaw`UPDATE "MonthClose" SET "ownerName"='changed' WHERE id=${saved.id}::uuid`);
+  const newReceipt=(await post("/purchase-receipts",{currency:"USD",lines:[{materialId:mat,quantity:"3.25",unit:"kg",unitPricePerKg:"2"}]})).body;
+  const next=(await request(app.getHttpServer()).get("/api/v1/reports").set("Authorization",`Bearer ${token}`).expect(200)).body;
+  assert.equal(next.purchases.length,1);assert.equal(next.purchases[0].id,newReceipt.id);assert.equal(next.purchaseAmounts.find((r:any)=>r.currency==="USD").amount,"6.5");
+  const nextClose=(await post("/month-closes",{previousId:closed.id})).body;
+  const second=(await db.monthClose.findUniqueOrThrow({where:{id:nextClose.id}})).snapshot as any;
+  assert.ok(second.openingStock.some((r:any)=>r.lot.itemId===mat&&r.onHandKg==="18.25"&&r.value.amounts.UZS==="1825"));
+  assert.ok(!second.openingStock.some((r:any)=>r.lotId===originalLot.id));
+  await post("/month-closes/opening",{closeId:nextClose.id,lines:[]});
+  assert.equal(await db.inventoryBalance.count({where:{onHandKg:{gt:0}}}),0);
+  await request(app.getHttpServer()).post("/api/v1/month-closes").send({}).expect(401);
+});
+
+test("month close requires an owner role even with factory write permissions", async () => {
+  const owner = await db.user.findUniqueOrThrow({where:{login:process.env.OWNER_LOGIN}});
+  const helper = await db.user.create({data:{login:`month-helper-${suffix}`,name:"Month helper",passwordHash:owner.passwordHash}});
+  const role = await db.role.create({data:{code:`MONTH_HELPER_${suffix}`,name:"Month helper",permissions:{create:[{permission:{connect:{code:"factory.write"}}},{permission:{connect:{code:"audit.read"}}}]}}});
+  await db.userRole.create({data:{userId:helper.id,roleId:role.id}});
+  const access=(await request(app.getHttpServer()).post("/api/v1/auth/login").send({login:helper.login,password:process.env.OWNER_PASSWORD,deviceId:randomUUID()}).expect(201)).body.accessToken;
+  const count=await db.monthClose.count();
+  await request(app.getHttpServer()).post("/api/v1/month-closes").set("Authorization",`Bearer ${access}`).set("Idempotency-Key",randomUUID()).set("X-Recovery-Epoch",epoch).send({}).expect(409);
+  assert.equal(await db.monthClose.count(),count);
+  await request(app.getHttpServer()).post("/api/v1/month-closes/opening").set("Authorization",`Bearer ${access}`).set("Idempotency-Key",randomUUID()).set("X-Recovery-Epoch",epoch).send({closeId:randomUUID(),lines:[]}).expect(409);
 });

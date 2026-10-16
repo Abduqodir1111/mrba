@@ -1,3 +1,4 @@
+import { assertCurrentStockDocument } from "./stock-period";
 import { supplierPdf } from "./supplier-pdf";
 import { effectivePurchase, revisionInclude } from "./purchase-values";
 import { Query } from "@nestjs/common";
@@ -130,6 +131,17 @@ export class OperationsService {
             throw new ConflictException("IDEMPOTENCY_KEY_REUSED");
           return existing.result;
         }
+        // A close takes the exclusive lock; every accounting mutation shares it.
+        // Assign the reporting period AFTER waiting, avoiding timestamp races at closure.
+        if (["MONTH_CLOSE", "MONTH_OPENING"].includes(type))
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended('accounting-period', 0))`;
+        else
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock_shared(hashtextextended('accounting-period', 0))`;
+        const accountingPeriod = await tx.monthClose.findFirst({ orderBy: { number: "desc" }, select: { id: true, stockReset: true } });
+        if (accountingPeriod?.stockReset && type !== "MONTH_OPENING" &&
+            !["MONTH_CLOSE", "MATERIAL_CREATE", "SUPPLIER_CREATE", "ITEM_CREATE", "EQUIPMENT_CREATE", "LOCATION_CREATE", "CATALOG_EDIT"].includes(type) &&
+            !await tx.commandReceipt.count({where:{type:"MONTH_OPENING",reportingPeriodId:accountingPeriod!.id}}))
+          throw new ConflictException("Сначала введите фактические остатки: Ещё → Закрытие месяца → Пересчёт складов");
         const intent = await tx.commandIntent.findUnique({ where: { id } });
         if (
           intent &&
@@ -140,7 +152,7 @@ export class OperationsService {
           throw new ConflictException("Черновик недоступен");
         // The FK anchor and final result are committed together; never visible half-written.
         await tx.commandReceipt.create({
-          data: { commandId: id, actorId, type, payloadHash, result: {} },
+          data: { commandId: id, actorId, type, payloadHash, result: {}, reportingPeriodId: accountingPeriod?.id },
         });
         const result = await run(tx);
         await tx.commandReceipt.update({
@@ -163,7 +175,7 @@ export class OperationsService {
         });
         return result;
       },
-      { timeout: 30000 },
+      { timeout: type === "MONTH_CLOSE" ? 60000 : 30000 },
     );
   }
   async purchase(actorId: string, id: string, epoch: string, dto: PurchaseDto) {
@@ -372,11 +384,15 @@ export class OperationsController {
           productGroups.set(row.id, { id: row.id, name: row.name, quantityKg: new Prisma.Decimal(existing?.quantityKg ?? 0).plus(row.quantityKg).toString() });
         }
         const stockByProduct = [...productGroups.values()];
+        const lastClose = await tx.monthClose.findFirst({ orderBy: { number: "desc" }, select: { id: true, to: true, stockReset: true } });
+        const openingPending=!!lastClose?.stockReset && !await tx.commandReceipt.count({where:{type:"MONTH_OPENING",reportingPeriodId:lastClose!.id}});
+        const currentPeriodOnly = !!lastClose && !purchaseFrom && !purchaseTo;
         const totals = await tx.$queryRaw<
           Array<{ currency: string; amount: string; unpriced: number }>
-        >`SELECT l.currency, SUM(l.amount)::text AS amount, COUNT(*) FILTER (WHERE NOT l."priceKnown")::int AS unpriced FROM "EffectivePurchaseLine" l JOIN "PurchaseReceipt" r ON r.id=l."receiptId" JOIN "PurchaseLot" pl ON pl."lineId"=l.id JOIN "StockLot" sl ON sl.id=pl.id JOIN "BusinessDocument" d ON d.id=sl."originDocumentId" WHERE d.status='POSTED' AND r."postedAt" >= ${from} AND r."postedAt" <= ${to} GROUP BY l.currency`;
+        >`SELECT l.currency, SUM(l.amount)::text AS amount, COUNT(*) FILTER (WHERE NOT l."priceKnown")::int AS unpriced FROM "EffectivePurchaseLine" l JOIN "PurchaseReceipt" r ON r.id=l."receiptId" JOIN "PurchaseLot" pl ON pl."lineId"=l.id JOIN "StockLot" sl ON sl.id=pl.id JOIN "BusinessDocument" d ON d.id=sl."originDocumentId" JOIN "CommandReceipt" cmd ON cmd."commandId"=d."commandId" WHERE d.status='POSTED' AND (NOT ${currentPeriodOnly} OR cmd."reportingPeriodId"=${lastClose?.id ?? null}::uuid) AND r."postedAt" >= ${from} AND r."postedAt" <= ${to} GROUP BY l.currency`;
         return {
           site,
+          openingPending,
           owner: req.actor.name,
           shift: currentShift(new Date()),
           generatedAt: new Date().toISOString(),
@@ -393,7 +409,7 @@ export class OperationsController {
             where: {
               lines: {
                 some: {
-                  lot: { stockLot: { originDocument: { status: "POSTED" } } },
+                  lot: { stockLot: { originDocument: { status: "POSTED", ...(lastClose ? { command: { reportingPeriodId: lastClose.id } } : {}) } } },
                 },
               },
             },
@@ -401,7 +417,8 @@ export class OperationsController {
           suppliers: await tx.supplier.count(),
           materials: await tx.material.count(),
           purchaseAmounts: totals,
-          purchasePeriod: { from: from.toISOString(), to: to.toISOString() },
+          purchasePeriod: { from: currentPeriodOnly && lastClose!.to > from ? lastClose!.to.toISOString() : from.toISOString(), to: to.toISOString() },
+          openPeriodStartedAt: lastClose?.to.toISOString() ?? null,
           recent: (await tx.purchaseReceipt.findMany({
             where: {
               lines: {
@@ -418,6 +435,30 @@ export class OperationsController {
       },
       { isolationLevel: "RepeatableRead" },
     );
+  }
+  @Get("dashboard/raw-group") @Allow("dashboard.read") async rawGroup(
+    @Query("category") category: string, @Query("from") fromText: string, @Query("to") toText: string,
+  ) {
+    const from = new Date(fromText), to = new Date(toText);
+    if (!["KIZIL", "SARIK"].includes(category) || !Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime()) || from > to)
+      throw new BadRequestException("Проверьте группу и период");
+    return this.db.$transaction(async tx => {
+      const rows = await tx.$queryRaw<Array<{ receiptId: string; currency: string; quantityKg: string; returnedKg: string; discountKg: string; percentDiscountKg: string; amount: string; priceKnown: boolean }>>`
+        SELECT l."receiptId", l.currency, l."quantityKg"::text, (original."quantityKg" + original."returnedKg" - l."quantityKg")::text AS "returnedKg", l."discountKg"::text, l."percentDiscountKg"::text, l.amount::text, l."priceKnown"
+        FROM "EffectivePurchaseLine" l JOIN "Material" m ON m.id=l."materialId"
+        JOIN "PurchaseLine" original ON original.id=l.id
+        JOIN "PurchaseReceipt" r ON r.id=l."receiptId"
+        JOIN "PurchaseLot" pl ON pl."lineId"=l.id JOIN "StockLot" sl ON sl.id=pl.id
+        JOIN "BusinessDocument" d ON d.id=sl."originDocumentId"
+        WHERE d.status='POSTED' AND m.category=${category} AND r."postedAt">=${from} AND r."postedAt"<=${to}`;
+      const sum = (field: "quantityKg" | "returnedKg" | "discountKg" | "percentDiscountKg") => rows.reduce((a,r) => a.plus(r[field]), new Prisma.Decimal(0));
+      const accepted = sum("quantityKg"), returned = sum("returnedKg"), discounts = sum("discountKg").plus(sum("percentDiscountKg"));
+      const amounts = new Map<string, Prisma.Decimal>();
+      for (const row of rows.filter(r => r.priceKnown)) amounts.set(row.currency, (amounts.get(row.currency) ?? new Prisma.Decimal(0)).plus(row.amount));
+      return { category, from: from.toISOString(), to: to.toISOString(), receipts: new Set(rows.map(r=>r.receiptId)).size, lines: rows.length,
+        grossKg: accepted.plus(returned).toString(), returnedKg: returned.toString(), discountKg: discounts.toString(), acceptedKg: accepted.toString(), payableKg: accepted.minus(discounts).toString(),
+        unpriced: rows.filter(r=>!r.priceKnown).length, amounts: [...amounts].map(([currency,amount])=>({currency,amount:amount.toString()})) };
+    }, { isolationLevel: "RepeatableRead" });
   }
   @Get("materials") @Allow("catalog.read") materials(@Query() q: PageQuery) {
     return page(
@@ -534,6 +575,7 @@ export class OperationsController {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`document:${documentId}`}, 0))`;
       const doc = await tx.businessDocument.findUniqueOrThrow({ where: { id: documentId } });
       if (doc.status !== "POSTED") throw new ConflictException("Приход отменён");
+      await assertCurrentStockDocument(tx,documentId);
       const revisions = await tx.purchaseRevision.findMany({ where: { lineId }, ...revisionInclude });
       const current = effectivePurchase({ ...original, revisions });
       if (dto.version !== current.version) throw new ConflictException("Приход уже изменён. Обновите историю и откройте его снова.");

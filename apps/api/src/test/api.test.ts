@@ -248,7 +248,9 @@ test("ledger balances reconcile and financial currencies are kept separate", asy
     .expect(200);
   assert.equal(dashboard.body.purchaseAmounts.length, 2);
   const localMonth = new Date(Date.now() + 5 * 3600000).toISOString().slice(0, 7);
-  assert.equal(dashboard.body.purchasePeriod.from, new Date(`${localMonth}-01T00:00:00+05:00`).toISOString());
+  const monthStart = new Date(`${localMonth}-01T00:00:00+05:00`);
+  const closeStart = dashboard.body.openPeriodStartedAt ? new Date(dashboard.body.openPeriodStartedAt) : monthStart;
+  assert.equal(dashboard.body.purchasePeriod.from, new Date(Math.max(monthStart.getTime(),closeStart.getTime())).toISOString());
   const emptyPeriod = await request(app.getHttpServer())
     .get("/api/v1/dashboard?purchaseFrom=2000-01-01T00:00:00%2B05:00&purchaseTo=2000-01-31T23:59:59%2B05:00")
     .set(headers()).expect(200);
