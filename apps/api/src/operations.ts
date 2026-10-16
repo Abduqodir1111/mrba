@@ -46,9 +46,9 @@ class NamedDto {
 }
 class LineDto {
   @IsOptional() @IsString() @MaxLength(150) supplierName?: string;
-  @IsOptional() @IsString() @Matches(/^\d{1,12}$/) returnedKg?: string;
+  @IsOptional() @IsString() @Matches(/^\d{1,12}(?:\.\d{1,3})?$/) returnedKg?: string;
   @IsOptional() @IsString() @Matches(/^\d{1,3}(?:\.\d{1,2})?$/) discountPercent?: string;
-  @IsOptional() @IsString() @Matches(/^\d{1,12}$/) discountKg?: string;
+  @IsOptional() @IsString() @Matches(/^\d{1,12}(?:\.\d{1,3})?$/) discountKg?: string;
   @IsOptional() @IsUUID() materialId?: string;
   @IsOptional()
   @IsString()
@@ -63,8 +63,8 @@ class AmendPurchaseDto {
   @IsInt() @Min(0) version!: number;
   @IsOptional() @IsString() @MaxLength(150) supplierName?: string;
   @IsIn(["UZS", "USD"]) currency!: "UZS" | "USD";
-  @IsString() @Matches(/^\d{1,12}$/) returnedKg!: string;
-  @IsString() @Matches(/^\d{1,12}$/) discountKg!: string;
+  @IsString() @Matches(/^\d{1,12}(?:\.\d{1,3})?$/) returnedKg!: string;
+  @IsString() @Matches(/^\d{1,12}(?:\.\d{1,3})?$/) discountKg!: string;
   @IsString() @Matches(/^\d{1,3}(?:\.\d{1,2})?$/) discountPercent!: string;
   @IsOptional() @IsString() @Matches(/^\d{1,12}(?:\.\d{1,6})?$/) unitPricePerKg?: string;
 }
@@ -241,10 +241,10 @@ export class OperationsService {
             throw new ConflictException("Сырьё недоступно");
           let kg: string;
           try {
-            kg = toKg(row.quantity, row.unit);
+            kg = toKg(row.quantity, row.unit, true);
           } catch {
             throw new ConflictException(
-              "Вес должен быть положительным, только целые килограммы",
+              "Укажите положительный вес с точностью до 0,001 кг",
             );
           }
           const price = new Prisma.Decimal(row.unitPricePerKg ?? "0");
@@ -340,40 +340,55 @@ export class OperationsController {
   }
   @Get("dashboard") @Allow("dashboard.read") async dashboard(
     @Req() req: AuthRequest,
+    @Query("purchaseFrom") purchaseFrom?: string,
+    @Query("purchaseTo") purchaseTo?: string,
   ) {
+    const now = new Date(Date.now() + 5 * 3600000);
+    const month = now.toISOString().slice(0, 7);
+    const from = new Date(purchaseFrom ?? `${month}-01T00:00:00+05:00`);
+    const to = purchaseTo ? new Date(purchaseTo) : new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1) - 5 * 3600000 - 1);
+    if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime()) || from > to)
+      throw new BadRequestException("Укажите корректный период закупок");
     return this.db.$transaction(
       async (tx) => {
         const site = await tx.site.findFirstOrThrow();
-        const stock = await tx.inventoryBalance.aggregate({
-          where: {
-            location: {
-              kind: "STORAGE",
-              name: "Основной склад",
-              warehouse: { siteId: site.id },
-            },
-          },
-          _sum: { onHandKg: true },
-        });
-        const stockByMaterial = await tx.$queryRaw<
-          Array<{ id: string; name: string; quantityKg: string }>
-        >`SELECT i.id, i.name, SUM(b."onHandKg")::text AS "quantityKg"
+        const stockRows = await tx.$queryRaw<
+          Array<{ id: string; name: string; quantityKg: string; stockKind: string; mainStorage: boolean; category: string | null }>
+        >`SELECT i.id, i.name, m.category, COALESCE(l."stockKind",i.kind) AS "stockKind",
+            (loc.name='Основной склад') AS "mainStorage", SUM(b."onHandKg")::text AS "quantityKg"
           FROM "InventoryBalance" b
           JOIN "StockLot" l ON l.id=b."lotId"
           JOIN "Item" i ON i.id=l."itemId"
+          LEFT JOIN "Material" m ON m.id=i.id
           JOIN "StockLocation" loc ON loc.id=b."locationId"
           JOIN "Warehouse" w ON w.id=loc."warehouseId"
-          WHERE loc.name='Основной склад' AND loc.kind='STORAGE' AND w."siteId"=${site.id}::uuid
-          GROUP BY i.id, i.name HAVING SUM(b."onHandKg") > 0 ORDER BY i.name, i.id`;
+          WHERE loc.kind='STORAGE' AND w."siteId"=${site.id}::uuid
+          GROUP BY i.id, i.name, m.category, COALESCE(l."stockKind",i.kind), (loc.name='Основной склад')
+          HAVING SUM(b."onHandKg") > 0 ORDER BY i.name, i.id`;
+        const stockByMaterial = stockRows.filter(row => row.mainStorage && row.stockKind !== "PRODUCT");
+        const productGroups = new Map<string, { id: string; name: string; quantityKg: string }>();
+        for (const row of stockRows.filter(row => row.stockKind === "PRODUCT")) {
+          const existing = productGroups.get(row.id);
+          productGroups.set(row.id, { id: row.id, name: row.name, quantityKg: new Prisma.Decimal(existing?.quantityKg ?? 0).plus(row.quantityKg).toString() });
+        }
+        const stockByProduct = [...productGroups.values()];
         const totals = await tx.$queryRaw<
           Array<{ currency: string; amount: string; unpriced: number }>
-        >`SELECT l.currency, SUM(l.amount)::text AS amount, COUNT(*) FILTER (WHERE NOT l."priceKnown")::int AS unpriced FROM "EffectivePurchaseLine" l JOIN "PurchaseReceipt" r ON r.id=l."receiptId" JOIN "PurchaseLot" pl ON pl."lineId"=l.id JOIN "StockLot" sl ON sl.id=pl.id JOIN "BusinessDocument" d ON d.id=sl."originDocumentId" WHERE d.status='POSTED' GROUP BY l.currency`;
+        >`SELECT l.currency, SUM(l.amount)::text AS amount, COUNT(*) FILTER (WHERE NOT l."priceKnown")::int AS unpriced FROM "EffectivePurchaseLine" l JOIN "PurchaseReceipt" r ON r.id=l."receiptId" JOIN "PurchaseLot" pl ON pl."lineId"=l.id JOIN "StockLot" sl ON sl.id=pl.id JOIN "BusinessDocument" d ON d.id=sl."originDocumentId" WHERE d.status='POSTED' AND r."postedAt" >= ${from} AND r."postedAt" <= ${to} GROUP BY l.currency`;
         return {
           site,
           owner: req.actor.name,
           shift: currentShift(new Date()),
           generatedAt: new Date().toISOString(),
-          stockKg: stock._sum.onHandKg?.toString() ?? "0",
+          stockKg: stockByMaterial.reduce((sum, row) => sum.plus(row.quantityKg), new Prisma.Decimal(0)).toString(),
+          productStockKg: stockByProduct.reduce((sum, row) => sum.plus(row.quantityKg), new Prisma.Decimal(0)).toString(),
+          stockByProduct,
           stockByMaterial,
+          rawStockGroups: ["KIZIL", "SARIK"].map(category => ({
+            category,
+            quantityKg: stockByMaterial.filter(row => row.category === category).reduce((sum, row) => sum.plus(row.quantityKg), new Prisma.Decimal(0)).toString(),
+          })),
+          ungroupedRawKg: stockByMaterial.filter(row => !["KIZIL", "SARIK"].includes(row.category ?? "")).reduce((sum, row) => sum.plus(row.quantityKg), new Prisma.Decimal(0)).toString(),
           purchases: await tx.purchaseReceipt.count({
             where: {
               lines: {
@@ -386,6 +401,7 @@ export class OperationsController {
           suppliers: await tx.supplier.count(),
           materials: await tx.material.count(),
           purchaseAmounts: totals,
+          purchasePeriod: { from: from.toISOString(), to: to.toISOString() },
           recent: (await tx.purchaseReceipt.findMany({
             where: {
               lines: {

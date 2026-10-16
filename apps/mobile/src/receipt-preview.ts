@@ -35,8 +35,8 @@ export function receiptPreview(grossKg: string, minimumReturn: string, values: R
     const text = (values[key] ?? "").trim().replace(",", ".");
     return pattern.test(text) ? new Decimal(text) : null;
   };
-  const returned = read("returnedKg", /^\d{1,12}$/);
-  const discount = read("discountKg", /^\d{1,12}$/);
+  const returned = read("returnedKg", /^\d{1,12}(?:\.\d{1,3})?$/);
+  const discount = read("discountKg", /^\d{1,12}(?:\.\d{1,3})?$/);
   const percent = read("discountPercent", /^\d{1,3}(?:\.\d{1,2})?$/);
   const hasPrice = !!values.unitPricePerKg?.trim();
   const price = read("unitPricePerKg", /^\d{1,12}(?:\.\d{1,6})?$/);

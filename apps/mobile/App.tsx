@@ -1,3 +1,4 @@
+import { DateTimeField } from "./src/date-time-field";
 import {
   KeyboardAwareScrollView,
   KeyboardProvider,
@@ -52,9 +53,14 @@ type Dashboard = {
   generatedAt: string;
   stockKg: string;
   stockByMaterial: { id: string; name: string; quantityKg: string }[];
+  rawStockGroups?: { category: string; quantityKg: string }[];
+  ungroupedRawKg?: string;
+  productStockKg?: string;
+  stockByProduct?: { id: string; name: string; quantityKg: string }[];
   purchases: number;
   materials: number;
   suppliers: number;
+  purchasePeriod?: { from: string; to: string };
   purchaseAmounts: { currency: string; amount: string; unpriced?: number }[];
   recent: any[];
 };
@@ -209,6 +215,11 @@ function FactoryApp() {
   const [search, setSearch] = useState("");
   const [unit, setUnit] = useState<"kg" | "t">("t");
 
+  const [purchasePeriod, setPurchasePeriod] = useState<{ from: string; to: string } | null>(null);
+  const [purchasePeriodOpen, setPurchasePeriodOpen] = useState(false);
+  const [purchaseDraft, setPurchaseDraft] = useState({ from: "", to: "" });
+  const purchaseQuery = purchasePeriod ? `?purchaseFrom=${encodeURIComponent(purchasePeriod.from)}&purchaseTo=${encodeURIComponent(purchasePeriod.to)}` : "";
+
   useEffect(() => onSessionRemoved(() => {
     setAuthenticated(false);
     setData(null);
@@ -223,7 +234,7 @@ function FactoryApp() {
     setBusy(true);
     try {
       const [dashboard, m, sp, ls] = await Promise.all([
-        api<Dashboard>("/dashboard"),
+        api<Dashboard>("/dashboard" + purchaseQuery),
         all<Named>("/materials"),
         all<Named>("/suppliers"),
         all<any>("/inventory/lots"),
@@ -254,20 +265,20 @@ function FactoryApp() {
   }, []);
   useEffect(() => {
     if (authenticated) void reload();
-  }, [authenticated]);
+  }, [authenticated, purchaseQuery]);
   useEffect(() => {
     const sub = AppState.addEventListener("change", (state) => {
       if (state === "active" && authenticated) void reload();
     });
     return () => sub.remove();
-  }, [authenticated]);
+  }, [authenticated, purchaseQuery]);
   useEffect(() => {
     if (!authenticated) return;
     const timer = setInterval(() => {
       if (AppState.currentState === "active" && !modal) void reload();
     }, 60000);
     return () => clearInterval(timer);
-  }, [authenticated, modal]);
+  }, [authenticated, modal, purchaseQuery]);
   async function signIn() {
     setBusy(true);
     setError("");
@@ -444,11 +455,64 @@ function FactoryApp() {
       >
         {tab === "Главная" && (
           <>
+            <View style={[s.currencyCard, { padding: 20, gap: 16 }]}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 9 }}>
+                <Icon name="albums-outline" color={c.blue} size={20} />
+                <Text style={s.rowTitle}>Сырьё по группам</Text>
+              </View>
+              <View style={{ flexDirection: "row", gap: 12 }}>
+                {[{ id: "KIZIL", name: "Кизил", color: "#AB4B39", bg: "#FFF1EC" }, { id: "SARIK", name: "Сарик", color: "#927024", bg: "#FFF8E5" }].map(group => {
+                  const kg = data?.rawStockGroups?.find(row => row.category === group.id)?.quantityKg;
+                  return <View key={group.id} style={{ flex: 1, minWidth: 0, backgroundColor: group.bg, borderRadius: 16, padding: 14, gap: 7 }}>
+                    <Text style={{ fontSize: 15, fontWeight: "700", color: group.color }}>{group.name}</Text>
+                    <Text adjustsFontSizeToFit numberOfLines={1} style={{ fontSize: 24, fontWeight: "700", color: c.ink }}>{kg !== undefined ? format(new Decimal(kg).div(1000).toString()) : "—"} т</Text>
+                    <Text style={s.muted}>{kg !== undefined ? `${format(kg)} кг` : "Загрузка"}</Text>
+                  </View>;
+                })}
+              </View>
+              <Text style={s.footnote}>Основной склад · распределение задаёт владелец в «Ещё → Контроль»</Text>
+              {data?.ungroupedRawKg && new Decimal(data.ungroupedRawKg).gt(0) && <Text style={s.footnote}>Без группы: {format(data.ungroupedRawKg)} кг</Text>}
+            </View>
+            <LinearGradient
+              colors={["#17564F", "#103B39"]}
+              start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
+              style={[s.hero, { marginTop: 16 }]}
+            >
+              <View style={s.heroTop}>
+                <View style={s.shiftTag}>
+                  <Icon name="checkmark-circle-outline" color="#A7D8CB" size={18} />
+                  <Text style={s.heroLabel}>Готовая продукция</Text>
+                </View>
+                <Icon name="layers-outline" color="#A7D8CB" size={22} />
+              </View>
+              <Text style={s.heroCaption}>Остатки на всех складах</Text>
+              <View style={s.heroValueRow}>
+                <Text adjustsFontSizeToFit numberOfLines={1} style={[s.heroValue, { flexShrink: 1 }]}>
+                  {data?.productStockKg !== undefined ? format(new Decimal(data.productStockKg).div(1000).toString()) : "—"}
+                </Text>
+                <Text style={s.heroUnit}>т</Text>
+              </View>
+              <View style={{ marginTop: 18 }}>
+                {data?.stockByProduct?.map(product => <View key={product.id} style={s.heroMaterialRow}>
+                  <Text style={s.heroMaterialName}>{product.name}</Text>
+                  <View style={{ alignItems: "flex-end", gap: 4 }}>
+                    <Text style={s.heroMaterialWeight}>{format(product.quantityKg)} кг</Text>
+                    <Text style={s.heroSmall}>{format(new Decimal(product.quantityKg).div(1000).toString())} т</Text>
+                  </View>
+                </View>)}
+                {data?.productStockKg !== undefined && !data.stockByProduct?.length && <Text style={s.heroSmall}>Готовой продукции на складах пока нет</Text>}
+              </View>
+              <View style={s.heroBottom}>
+                <Text style={s.heroSmall}>{data?.productStockKg !== undefined ? `${format(data.productStockKg)} кг` : "Загрузка данных"}</Text>
+                <View style={{ flex: 1 }} />
+                <Text style={s.heroSmall}>{data?.stockByProduct?.length ?? 0} видов продукции</Text>
+              </View>
+            </LinearGradient>
             <LinearGradient
               colors={["#193C56", "#102A3F"]}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 1 }}
-              style={s.hero}
+              style={[s.hero, { marginTop: 16 }]}
             >
               <View style={s.heroTop}>
                 <View style={s.shiftTag}>
@@ -513,7 +577,26 @@ function FactoryApp() {
                 <Icon name="cube-outline" color="#91B5D0" size={26} />
               </View>
             </LinearGradient>
-            <Heading title="Закупки" />
+            <Heading title="Закупки" link="Период" onPress={() => {
+              const wall = (value: string) => new Date(new Date(value).getTime() + 5 * 3600000).toISOString().slice(0, 16);
+              const month = new Date(Date.now() + 5 * 3600000).toISOString().slice(0, 7);
+              setPurchaseDraft(data?.purchasePeriod ? { from: wall(data.purchasePeriod.from), to: wall(data.purchasePeriod.to) } : { from: `${month}-01T00:00`, to: new Date(Date.now() + 5 * 3600000).toISOString().slice(0,16) });
+              setPurchasePeriodOpen(open => !open);
+            }} />
+            {purchasePeriodOpen && <View style={[s.currencyCard, { padding: 16, gap: 12, marginBottom: 12 }]}>
+              <Text style={s.muted}>Период закупок · время Ташкента</Text>
+              <Text style={s.label}>С даты и времени</Text>
+              <DateTimeField label="Начало периода закупок" value={purchaseDraft.from} onChange={from => setPurchaseDraft(d => ({...d, from}))} />
+              <Text style={s.label}>По дату и время</Text>
+              <DateTimeField label="Конец периода закупок" value={purchaseDraft.to} onChange={to => setPurchaseDraft(d => ({...d, to}))} />
+              <Button title="Применить период" onPress={() => {
+                const from = new Date(`${purchaseDraft.from}:00+05:00`);
+                const to = new Date(`${purchaseDraft.to}:59.999+05:00`);
+                if (!Number.isFinite(from.getTime()) || !Number.isFinite(to.getTime()) || from > to) { Alert.alert("Проверьте период", "Начало периода должно быть раньше его окончания."); return; }
+                setPurchasePeriod({from: from.toISOString(), to: to.toISOString()}); setPurchasePeriodOpen(false);
+              }} />
+              <Button title="Текущий месяц" secondary onPress={() => { setPurchasePeriod(null); setPurchasePeriodOpen(false); }} />
+            </View>}
             <View style={s.currencyCard}>
               {["UZS", "USD"].map((currency, i) => (
                 <View
@@ -540,62 +623,11 @@ function FactoryApp() {
               ))}
             </View>
             <Text style={s.footnote}>
-              За всё время · Каждая валюта учитывается отдельно
+              {purchasePeriod && data?.purchasePeriod
+                ? `${new Date(data.purchasePeriod.from).toLocaleString("ru-RU", { timeZone: "Asia/Tashkent", day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })} — ${new Date(data.purchasePeriod.to).toLocaleString("ru-RU", { timeZone: "Asia/Tashkent", day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}`
+                : "Текущий месяц"} · Каждая валюта учитывается отдельно
               {!!data?.purchaseAmounts.some((x) => x.unpriced) && " · Есть приходы без цены"}
             </Text>
-            <Heading
-              title="Последние поступления"
-              link="Склад"
-              onPress={() => setTab("Склад")}
-            />
-            {!data?.recent.length ? (
-              <Empty
-                title="Начнём с первого поступления"
-                text="Во вкладке «Склад» нажмите «Принять сырьё» и укажите название и вес."
-              />
-            ) : (
-              <View style={s.list}>
-                {data.recent.map((r, i) => (
-                  <View key={r.id} style={[s.listRow, i > 0 && s.borderTop]}>
-                    <View style={s.receiptIcon}>
-                      <Icon name="arrow-down" color={c.green} />
-                    </View>
-                    <View style={{ flex: 1, gap: 5 }}>
-                      <Text style={s.rowTitle}>
-                        {Array.from(
-                          new Set(
-                            r.lines
-                              .map(
-                                (line: any) =>
-                                  line.material?.name ??
-                                  materials.find(
-                                    (m) => m.id === line.materialId,
-                                  )?.name,
-                              )
-                              .filter(Boolean),
-                          ),
-                        ).join(", ") || "Сырьё"}
-                      </Text>
-                      <Text style={s.muted}>
-                        {clock(r.postedAt)} · {r.lines.length} поз.
-                      </Text>
-                    </View>
-                    <Text style={s.rowTitle}>
-                      +{" "}
-                      {format(
-                        r.lines
-                          .reduce(
-                            (n: Decimal, l: any) => n.plus(l.quantityKg),
-                            new Decimal(0),
-                          )
-                          .toString(),
-                      )}{" "}
-                      кг
-                    </Text>
-                  </View>
-                ))}
-              </View>
-            )}
           </>
         )}
         {tab === "Склад" && (
@@ -702,7 +734,7 @@ function FactoryApp() {
                     ["Ночная смена", "20:00 — 08:00"],
                     ["Дата ночной смены", "Дата начала"],
                     ["Валюты", "UZS · USD"],
-                    ["Вес", "Целые кг · тонны"],
+                    ["Вес", "Килограммы · тонны"],
                   ].map(([key, value], i) => (
                     <View
                       key={key}
@@ -862,13 +894,13 @@ function EntryModal({
       const p = new Decimal(price.replace(",", ".") || "0");
       if (
         !received.isFinite() ||
-        !received.isInteger() ||
+        received.decimalPlaces() > 3 ||
         !received.gt(0) ||
         !discount.isFinite() ||
-        !discount.isInteger() ||
+        discount.decimalPlaces() > 3 ||
         discount.lt(0) ||
         discount.gt(received.minus(returned)) ||
-        !returned.isFinite() || !returned.isInteger() || returned.lt(0) || returned.gte(received) ||
+        !returned.isFinite() || returned.decimalPlaces() > 3 || returned.lt(0) || returned.gte(received) ||
         !percent.isFinite() || percent.lt(0) || percent.gt(100) || percent.decimalPlaces() > 2 ||
         !p.isFinite() ||
         !p.gt(0)
@@ -896,7 +928,7 @@ function EntryModal({
     try {
       if (kind === "purchase" && !receiptPreview)
         throw Error(
-          "Проверьте вес, цену и скидку: скидка должна быть целым числом кг от 0 до полученного веса.",
+          "Проверьте вес, цену и скидку. Вес указывается до 0,001 кг, скидка не должна превышать принятый вес.",
         );
       await (draft ? saveDraft : mutate)(
         kind === "purchase"
@@ -916,9 +948,9 @@ function EntryModal({
                   quantity: quantity.replace(",", "."),
                   unit,
                   unitPricePerKg: price.replace(",", "."),
-                  returnedKg: new Decimal(returnedKg.trim() || "0").toFixed(),
+                  returnedKg: new Decimal(returnedKg.trim().replace(",", ".") || "0").toFixed(),
                   discountPercent: new Decimal(discountPercent.trim().replace(",", ".") || "0").toFixed(),
-                  discountKg: new Decimal(discountKg.trim().replace(",", ".") || "0").toFixed(0),
+                  discountKg: new Decimal(discountKg.trim().replace(",", ".") || "0").toFixed(),
                 },
               ],
             }

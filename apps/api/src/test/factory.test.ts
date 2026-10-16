@@ -154,10 +154,10 @@ test("shift closing blocks unfinished batches and reopening requires a reason; r
   assert.equal((await read()).status, "CLOSED");
   assert.equal((await read()).version, 4);
 });
-test("integer kilogram validation accepts exact tonnes, rejects fractional kg", async () => {
+test("receipt weight rejects precision below one gram", async () => {
   for (const [quantity, unit] of [
-    ["1.001", "kg"],
-    ["0.0001", "t"],
+    ["1.0001", "kg"],
+    ["0.0001", "kg"],
   ])
     await post(
       "/purchase-receipts",
@@ -782,6 +782,17 @@ test("warehouse waste becomes raw stock while remaining waste in production repo
       .quantityKg,
     "20.000",
   );
+  assert.ok(dashboard.body.stockByProduct.some((row: any) => row.id === product));
+  assert.ok(!dashboard.body.stockByProduct.some((row: any) => [wasteId, saleWasteId].includes(row.id)));
+  assert.ok(!dashboard.body.stockByMaterial.some((row: any) => row.id === product));
+  const expectedProducts = await db.inventoryBalance.findMany({
+    where: { location: { kind: "STORAGE" } },
+    include: { lot: { include: { item: true } } },
+  });
+  const expectedProductKg = expectedProducts.filter(row => (row.lot.stockKind ?? row.lot.item.kind) === "PRODUCT").reduce((sum, row) => sum.plus(row.onHandKg), new Prisma.Decimal(0));
+  assert.ok(expectedProductKg.eq(dashboard.body.productStockKg));
+  assert.ok(dashboard.body.stockByProduct.reduce((sum: Prisma.Decimal, row: any) => sum.plus(row.quantityKg), new Prisma.Decimal(0)).eq(expectedProductKg));
+
 });
 
 test("supplier return without supplier reduces stock once and rejects excess", async () => {
@@ -1266,7 +1277,7 @@ test("manual receipt discount preserves physical stock and survives retry; inval
     summary.items.find((r: any) => r.materialId === line.materialId).discountKg,
     "300.000",
   );
-  for (const discountKg of ["5001", "-1", "1.5"]) {
+  for (const discountKg of ["5001", "-1", "1.0001"]) {
     const badId = randomUUID();
     const result = await rawPost(
       "/purchase-receipts",
@@ -1742,7 +1753,10 @@ test("kettle return reprices original products and actual recovered metal, prese
   assert.equal((await costing.unit(result.lotId)).amounts.UZS, expectedUnit.toString());
   const combined = addCosts([scaleCost(productUnit, "15000"), result.returnedCost]);
   assert.ok(new Prisma.Decimal(combined.amounts.UZS).minus("36006").abs().lt("0.000000001"));
-  const batches = (await request(app.getHttpServer()).get("/api/v1/batches?limit=100").set("Authorization", `Bearer ${token}`).expect(200)).body.items;
+  const batches = (await Promise.all([b.id, child.id].map(async id => {
+    const row = await db.productionBatch.findUniqueOrThrow({ where: { id } });
+    return (await request(app.getHttpServer()).get(`/api/v1/batches?search=${encodeURIComponent(row.number)}`).set("Authorization", `Bearer ${token}`).expect(200)).body.items;
+  }))).flat();
   const originalCard = batches.find((r: any) => r.id === b.id);
   assert.equal(originalCard.carryoverKg, "1300");
   assert.equal(originalCard.recordedCarryoverKg, "1403");
@@ -1796,4 +1810,51 @@ test("kettle return before production preserves all raw input value without clos
   const shift = await db.shiftInstance.findUniqueOrThrow({ where: { id: current.shiftId } });
   assert.equal(shift.status, "OPEN");
   assert.equal(await db.productionBatch.count({ where: { previousBatchId: b.id } }), 0);
+});
+
+test("dashboard raw groups follow owner assignments without changing stock", async () => {
+  const dashboard = async () => (await request(app.getHttpServer()).get("/api/v1/dashboard").set("Authorization", `Bearer ${token}`).expect(200)).body;
+  const group = (data: any, name: string) => new Prisma.Decimal(data.rawStockGroups.find((row: any) => row.category === name).quantityKg);
+  const before = await dashboard();
+  const id = (await post("/materials", { name: `Grouped raw ${suffix}` })).body.id;
+  await post("/purchase-receipts", { currency: "UZS", lines: [{ materialId: id, quantity: "123", unit: "kg", unitPricePerKg: "2" }] });
+  const materialRow = await db.material.findUniqueOrThrow({ where: { id } });
+  const path = `/catalog/materials/${id}/edit`;
+  const edit = { name: materialRow.name, isActive: true, version: materialRow.version };
+  await post(path, { ...edit, category: "KIZIL" });
+  const first = await dashboard();
+  assert.ok(group(first, "KIZIL").eq(group(before, "KIZIL").plus(123)));
+  assert.ok(group(first, "SARIK").eq(group(before, "SARIK")));
+  await post(path, { ...edit, version: edit.version + 1, category: "SARIK" });
+  const second = await dashboard();
+  assert.ok(group(second, "KIZIL").eq(group(before, "KIZIL")));
+  assert.ok(group(second, "SARIK").eq(group(before, "SARIK").plus(123)));
+  assert.equal(second.stockKg, first.stockKg);
+  await post(path, { ...edit, version: edit.version + 2, category: "" });
+  const cleared = await dashboard();
+  assert.ok(group(cleared, "SARIK").eq(group(before, "SARIK")));
+  assert.ok(new Prisma.Decimal(cleared.ungroupedRawKg).eq(new Prisma.Decimal(before.ungroupedRawKg).plus(123)));
+});
+
+test("fractional receipts and late returns preserve exact weight and cost", async () => {
+  const id = (await post("/materials", { name: `Fractional raw ${suffix}` })).body.id;
+  const receipt = (await post("/purchase-receipts", {
+    currency: "UZS", lines: [
+      { materialId: id, quantity: "20.5", unit: "kg", unitPricePerKg: "100", returnedKg: "0.25", discountKg: "0.125" },
+      { materialId: id, quantity: "0.020501", unit: "t" },
+    ],
+  })).body;
+  const lines = await db.purchaseLine.findMany({ where: { receiptId: receipt.id }, orderBy: { quantityKg: "asc" }, include: { lot: { include: { stockLot: { include: { balances: true } } } } } });
+  assert.equal(lines[0].quantityKg.toString(), "20.25");
+  assert.equal(lines[0].amount.toString(), "2012.5");
+  assert.equal(lines[1].quantityKg.toString(), "20.501");
+  assert.equal(lines[0].lot?.stockLot?.balances[0].onHandKg.toString(), "20.25");
+  await post(`/purchase-lines/${lines[0].id}/amend`, { version: 0, currency: "UZS", returnedKg: "0.5", discountKg: "0.125", discountPercent: "0", unitPricePerKg: "100" });
+  const balance = await db.inventoryBalance.findFirstOrThrow({ where: { lotId: lines[0].lot!.stockLot!.id } });
+  assert.equal(balance.onHandKg.toString(), "20");
+  const revision = await db.purchaseRevision.findFirstOrThrow({ where: { lineId: lines[0].id } });
+  assert.equal(revision.amount.toString(), "1987.5");
+  const count = await db.purchaseReceipt.count();
+  await post("/purchase-receipts", { currency: "UZS", lines: [{ materialId: id, quantity: "20.5001", unit: "kg" }] }, undefined, 409);
+  assert.equal(await db.purchaseReceipt.count(), count);
 });

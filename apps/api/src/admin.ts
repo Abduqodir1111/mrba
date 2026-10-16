@@ -229,7 +229,9 @@ export class AdminController {
           data.phone = dto.phone;
           data.notes = dto.notes;
         }
-        if (kind === "materials") data.category = dto.category;
+        if (kind === "materials" && dto.category !== undefined) {
+          data.category = dto.category || null;
+        }
         if (dto.wasteDisposition !== undefined) {
           ensure(
             kind === "items" && before.kind === "WASTE",

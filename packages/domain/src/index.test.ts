@@ -29,3 +29,10 @@ test("Tashkent shifts at midnight and exact boundaries", () => {
   assert.equal(night.startsAt, "2026-09-21T15:00:00.000Z");
   assert.equal(night.endsAt, "2026-09-22T03:00:00.000Z");
 });
+
+test("fractional receipt weights preserve grams without relaxing whole-weight operations", () => {
+  assert.equal(toKg("20.5", "kg", true), "20.5");
+  assert.equal(toKg("0.020501", "t", true), "20.501");
+  assert.throws(() => toKg("20.5001", "kg", true));
+  assert.throws(() => toKg("20.5", "kg"));
+});

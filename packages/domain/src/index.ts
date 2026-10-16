@@ -4,13 +4,13 @@ export const FACTORY_TIMEZONE = "Asia/Tashkent";
 export const CURRENCIES = ["UZS", "USD"] as const;
 export type Currency = (typeof CURRENCIES)[number];
 export type WeightUnit = "kg" | "t";
-export function toKg(value: string, unit: WeightUnit): string {
+export function toKg(value: string, unit: WeightUnit, fractional = false): string {
   if (!/^\d{1,12}(?:\.\d{1,6})?$/.test(value))
     throw new Error("INVALID_WEIGHT");
   const kg = new Decimal(value).times(unit === "t" ? 1000 : 1);
-  if (kg.lte(0) || kg.decimalPlaces() > 0 || kg.greaterThan("999999999999"))
+  if (kg.lte(0) || kg.decimalPlaces() > (fractional ? 3 : 0) || kg.greaterThan("999999999999"))
     throw new Error("INVALID_WEIGHT");
-  return kg.toFixed(0);
+  return kg.toFixed();
 }
 export function displayWeight(kg: string, unit: WeightUnit): string {
   return new Decimal(kg).dividedBy(unit === "t" ? 1000 : 1).toString();

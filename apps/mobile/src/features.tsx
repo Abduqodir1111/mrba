@@ -205,6 +205,7 @@ const wasteChoices = [
 ];
 type Option = { id: string; name: string };
 type Field = {
+  fractionalWeight?: boolean;
   stockAvailableKg?: string;
   key: string;
   label: string;
@@ -492,9 +493,9 @@ function Editor({
           const n = new Decimal(v[f.key].replace(",", ".")).times(
             weightUnit === "t" ? 1000 : 1,
           );
-          if (n.lt(0) || !n.isInteger())
-            throw Error("Вес должен соответствовать целому числу килограммов");
-          v[f.key] = n.toFixed(0);
+          if (!n.isFinite() || n.lt(0) || n.decimalPlaces() > (f.fractionalWeight ? 3 : 0))
+            throw Error(f.fractionalWeight ? "Укажите вес с точностью до 0,001 кг" : "Вес должен соответствовать целому числу килограммов");
+          v[f.key] = n.toFixed();
         } else if (f.number) v[f.key] = v[f.key]?.replace(",", ".");
       }
       if (form.wasteOptions) {
@@ -582,7 +583,7 @@ function Editor({
                       <Text
                         style={{ color: weightUnit === u ? c.blue : c.muted }}
                       >
-                        {u === "kg" ? "Целые кг" : "Тонны"}
+                        {u === "kg" ? (form.repeat?.fields.some(field => field.fractionalWeight) ? "Килограммы" : "Целые кг") : "Тонны"}
                       </Text>
                     </Pressable>
                   ))}
@@ -1872,7 +1873,7 @@ export function Workspace({
                       dropdown: true,
                       creatable: true,
                     },
-                    weight("quantity", "Получено до возврата"),
+                    { ...weight("quantity", "Получено до возврата"), fractionalWeight: true },
                     {
                       key: "unitPricePerKg",
                       required: false,
@@ -2873,6 +2874,7 @@ export function Workspace({
             </Card>
           ))}
           <Text style={s.section}>Редактирование справочников</Text>
+          <Text style={s.muted}>Чтобы распределить сырьё по группам Кизил и Сарик на главной, выберите «Изменить запись» → сырьё → «Группа на главной».</Text>
           <Btn
             secondary
             title="Изменить запись"
@@ -2925,6 +2927,14 @@ export function Workspace({
                             ]),
                             value: String(r.isActive),
                           },
+                          ...(kind === "materials" ? [{
+                            ...opt("category", "Группа на главной", [
+                              { id: "NONE", name: "Без группы" },
+                              { id: "KIZIL", name: "Кизил" },
+                              { id: "SARIK", name: "Сарик" },
+                              ...(r.category && !["KIZIL", "SARIK"].includes(r.category) ? [{ id: r.category, name: r.category }] : []),
+                            ]), value: r.category || "NONE",
+                          }] : []),
                           ...(kind === "items" && r.kind === "WASTE"
                             ? [
                                 {
@@ -2957,6 +2967,7 @@ export function Workspace({
                         (vv) => ({
                           ...vv,
                           version: r.version,
+                          ...(kind === "materials" ? { category: vv.category === "NONE" ? "" : vv.category } : {}),
                           isActive: vv.isActive === "true",
                         }),
                       ),
