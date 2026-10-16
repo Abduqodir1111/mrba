@@ -4443,6 +4443,58 @@ const s = StyleSheet.create({
   },
 });
 
+function CatalogGroup({ title, items, waste = false, disabled, showEmpty, onAdd, onEdit }: {
+  title: string; items: any[]; waste?: boolean; disabled: boolean; showEmpty: boolean;
+  onAdd: () => void; onEdit: (item: any) => void;
+}) {
+  const accent = waste ? c.orange : c.green;
+  return <View style={catalogStyles.group}>
+    <View style={catalogStyles.header}>
+      <View style={[catalogStyles.sectionIcon, { backgroundColor: waste ? "#FFF4E8" : "#E8F4F0" }]}>
+        <Ionicons name={waste ? "layers-outline" : "cube-outline"} size={19} color={accent} />
+      </View>
+      <View style={catalogStyles.heading}>
+        <Text style={catalogStyles.headingText}>{title}</Text>
+        <Text style={catalogStyles.count}>{items.length}</Text>
+      </View>
+      <Pressable accessibilityRole="button" accessibilityLabel={waste ? "Добавить вид отходов" : "Добавить продукцию"}
+        disabled={disabled} onPress={onAdd} style={({ pressed }) => [catalogStyles.add, disabled && { opacity: 0.45 }, pressed && { opacity: 0.65 }]}>
+        <Ionicons name="add" size={23} color={c.blue} />
+      </Pressable>
+    </View>
+    {showEmpty && !items.length && <Text style={catalogStyles.empty}>{waste ? "Виды отходов пока не добавлены" : "Продукция пока не добавлена"}</Text>}
+    {items.map(item => <Pressable key={item.id} accessibilityRole="button" accessibilityLabel={`Изменить ${waste ? "вид отходов" : "продукцию"}: ${item.name}`}
+      disabled={disabled} onPress={() => onEdit(item)}
+      style={({ pressed }) => [catalogStyles.row, pressed && !disabled && { backgroundColor: c.softBlue }]}>
+      <View style={catalogStyles.body}>
+        <Text style={[catalogStyles.name, !item.isActive && { color: c.muted }]}>{item.name}</Text>
+        {(waste || !item.isActive) && <View style={catalogStyles.meta}>
+          {waste && <View style={[catalogStyles.dot, { backgroundColor: item.wasteDisposition === "STORAGE" ? c.green : item.wasteDisposition === "SALE" ? c.orange : c.muted }]} />}
+          <Text style={catalogStyles.subtitle}>{[waste ? wasteDestination(item.wasteDisposition) : "", !item.isActive ? "Отключено" : ""].filter(Boolean).join(" · ")}</Text>
+        </View>}
+      </View>
+      {!disabled && <View style={catalogStyles.edit}><Ionicons name="create-outline" size={18} color={c.blue} /></View>}
+    </Pressable>)}
+  </View>;
+}
+const catalogStyles = StyleSheet.create({
+  group: { backgroundColor: c.white, borderRadius: 18, borderWidth: 1, borderColor: c.line, overflow: "hidden" },
+  header: { flexDirection: "row", alignItems: "center", gap: 10, paddingLeft: 14, paddingRight: 8, paddingVertical: 10 },
+  sectionIcon: { width: 34, height: 34, borderRadius: 11, alignItems: "center", justifyContent: "center", flexShrink: 0 },
+  heading: { flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: 8 },
+  headingText: { flexShrink: 1, minWidth: 0, fontSize: 15, lineHeight: 20, fontWeight: "700", color: c.ink },
+  count: { fontSize: 11, fontWeight: "600", color: c.muted, backgroundColor: c.bg, borderRadius: 8, paddingHorizontal: 7, paddingVertical: 3, overflow: "hidden" },
+  add: { width: 44, height: 44, borderRadius: 13, backgroundColor: c.softBlue, alignItems: "center", justifyContent: "center", flexShrink: 0 },
+  row: { flexDirection: "row", alignItems: "center", gap: 12, minHeight: 60, paddingHorizontal: 15, paddingVertical: 12, borderTopWidth: 1, borderTopColor: c.line },
+  body: { flex: 1, minWidth: 0, gap: 5 },
+  name: { fontSize: 14, lineHeight: 20, fontWeight: "600", color: c.ink },
+  meta: { flexDirection: "row", alignItems: "center", gap: 5 },
+  dot: { width: 5, height: 5, borderRadius: 3, flexShrink: 0 },
+  subtitle: { flexShrink: 1, fontSize: 11, lineHeight: 16, color: c.muted },
+  edit: { width: 32, height: 32, borderRadius: 10, backgroundColor: c.softBlue, alignItems: "center", justifyContent: "center", flexShrink: 0 },
+  empty: { paddingHorizontal: 15, paddingBottom: 16, fontSize: 12, lineHeight: 18, color: c.muted },
+});
+
 export function CatalogActions({
   onChanged,
   disabled = false,
@@ -4483,94 +4535,20 @@ export function CatalogActions({
       allowDraft: true,
       submit: (v, send) => send("/items", { ...v, kind }),
     });
+  const edit = (item: any) => setForm({
+    title: item.kind === "PRODUCT" ? "Изменить продукцию" : "Изменить вид отходов",
+    fields: [
+      { key: "name", label: "Название", value: item.name },
+      ...(item.kind === "WASTE" ? [{ ...opt("wasteDisposition", "Что делать с отходом", wasteChoices), value: item.wasteDisposition ?? "" }] : []),
+    ],
+    submit: (v, send) => send(`/catalog/items/${item.id}/edit`, { name: v.name, ...(item.kind === "WASTE" ? { wasteDisposition: v.wasteDisposition } : {}), version: item.version, isActive: item.isActive }),
+  });
   return (
-    <View>
+    <View style={{ gap: 14 }}>
       {!!error && <Text style={s.error}>{error}</Text>}
       {loading && <ActivityIndicator color={c.blue} />}
-      <Text style={[s.section, { marginTop: 16 }]}>
-        Готовая продукция · {productItems.length}
-      </Text>
-      <Btn
-        secondary
-        title="+ Продукция"
-        disabled={disabled}
-        onPress={() => open("PRODUCT")}
-      />
-      {!loading && !error && productItems.length === 0 && (
-        <Text style={s.muted}>Продукция пока не добавлена.</Text>
-      )}
-      {productItems.map((item) => (
-        <Card key={item.id}>
-          <Text style={s.section}>{item.name}</Text>
-          {!item.isActive && <Text style={s.muted}>Отключена</Text>}
-          <Btn
-            secondary
-            title="Изменить"
-            disabled={disabled}
-            onPress={() =>
-              setForm({
-                title: "Изменить продукцию",
-                fields: [{ key: "name", label: "Название", value: item.name }],
-                submit: (v, send) =>
-                  send(`/catalog/items/${item.id}/edit`, {
-                    name: v.name,
-                    version: item.version,
-                    isActive: item.isActive,
-                  }),
-              })
-            }
-          />
-        </Card>
-      ))}
-      <Text style={[s.section, { marginTop: 20 }]}>
-        Виды отходов · {wasteItems.length}
-      </Text>
-      <Btn
-        secondary
-        title="+ Вид отходов"
-        disabled={disabled}
-        onPress={() => open("WASTE")}
-      />
-      {wasteItems.length === 0 && !error && !loading && (
-        <Text style={s.muted}>Виды отходов пока не добавлены.</Text>
-      )}
-      {wasteItems.map((item) => (
-        <Card key={item.id}>
-          <Text style={s.section}>{item.name}</Text>
-          <Row
-            label="Назначение"
-            value={wasteDestination(item.wasteDisposition)}
-          />
-          {!item.isActive && <Text style={s.muted}>Отключён</Text>}
-          <Btn
-            secondary
-            title="Изменить"
-            disabled={disabled}
-            onPress={() =>
-              setForm({
-                title: "Изменить вид отходов",
-                fields: [
-                  { key: "name", label: "Название", value: item.name },
-                  {
-                    ...opt(
-                      "wasteDisposition",
-                      "Что делать с отходом",
-                      wasteChoices,
-                    ),
-                    value: item.wasteDisposition ?? "",
-                  },
-                ],
-                submit: (v, send) =>
-                  send(`/catalog/items/${item.id}/edit`, {
-                    ...v,
-                    version: item.version,
-                    isActive: item.isActive,
-                  }),
-              })
-            }
-          />
-        </Card>
-      ))}
+      <CatalogGroup title="Готовая продукция" items={productItems} disabled={disabled} showEmpty={!loading && !error} onAdd={() => open("PRODUCT")} onEdit={edit} />
+      <CatalogGroup title="Виды отходов" items={wasteItems} waste disabled={disabled} showEmpty={!loading && !error} onAdd={() => open("WASTE")} onEdit={edit} />
       {form && (
         <Editor
           form={form}
