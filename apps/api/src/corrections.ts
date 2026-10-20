@@ -19,7 +19,7 @@ import {
   MaxLength,
   ValidateNested,
 } from "class-validator";
-import { Type } from "class-transformer";
+import { Type, Transform } from "class-transformer";
 import { Database } from "./db";
 import { OperationsService } from "./operations";
 import { AccessGuard, Allow, AuthRequest } from "./identity";
@@ -29,12 +29,12 @@ class Reason {
 }
 class Output {
   @IsUUID() itemId!: string;
-  @IsString() @Matches(/^\d{1,12}$/) quantityKg!: string;
+  @Transform(({ value }) => typeof value === "string" ? value.trim().replace(",", ".") : value) @IsString() @Matches(/^\d{1,12}(?:\.\d{1,3})?$/) quantityKg!: string;
 }
 class Recovery extends Reason {
   @IsUUID() lotId!: string;
   @IsUUID() locationId!: string;
-  @IsString() @Matches(/^\d{1,12}$/) quantityKg!: string;
+  @Transform(({ value }) => typeof value === "string" ? value.trim().replace(",", ".") : value) @IsString() @Matches(/^\d{1,12}(?:\.\d{1,3})?$/) quantityKg!: string;
   @IsArray()
   @ArrayMinSize(1)
   @ArrayMaxSize(30)
@@ -165,6 +165,7 @@ export class CorrectionsController {
           include: { movements: true, shipment: true },
         });
         await assertCurrentStockDocument(tx,id);
+        ensure(doc.type !== "PRODUCTION_LOAD_EDIT" && !await tx.businessDocument.count({ where: { reversesId: id, type: "PRODUCTION_LOAD_EDIT" } }), "Исправляйте загрузку через последнюю загрузку в карточке плавки");
         ensure(!["MONTH_CLOSE", "MONTH_OPENING"].includes(doc.type), "Ввод остатков изменяется через инвентаризацию");
         ensure(
           doc.status === "POSTED" && doc.type !== "REVERSAL",

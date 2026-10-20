@@ -4,7 +4,8 @@ export const FACTORY_TIMEZONE = "Asia/Tashkent";
 export const CURRENCIES = ["UZS", "USD"] as const;
 export type Currency = (typeof CURRENCIES)[number];
 export type WeightUnit = "kg" | "t";
-export function toKg(value: string, unit: WeightUnit, fractional = false): string {
+export function toKg(value: string, unit: WeightUnit, fractional = true): string {
+  value = value.trim().replace(",", ".");
   if (!/^\d{1,12}(?:\.\d{1,6})?$/.test(value))
     throw new Error("INVALID_WEIGHT");
   const kg = new Decimal(value).times(unit === "t" ? 1000 : 1);

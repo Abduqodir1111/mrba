@@ -25,7 +25,7 @@ import {
   Min,
   ValidateNested,
 } from "class-validator";
-import { Type } from "class-transformer";
+import { Type, Transform } from "class-transformer";
 import { Database } from "./db";
 import { OperationsService } from "./operations";
 import { AccessGuard, Allow, AuthRequest } from "./identity";
@@ -36,7 +36,7 @@ class CustomerDto {
 }
 class ContractLineDto {
   @IsUUID() itemId!: string;
-  @IsString() @Matches(/^\d{1,12}$/) agreedQuantityKg!: string;
+  @Transform(({ value }) => typeof value === "string" ? value.trim().replace(",", ".") : value) @IsString() @Matches(/^\d{1,12}(?:\.\d{1,3})?$/) agreedQuantityKg!: string;
   @IsString() @Matches(/^\d{1,12}(?:\.\d{1,6})?$/) unitPricePerKg!: string;
 }
 class ContractDto {
@@ -54,7 +54,7 @@ class ContractDto {
 class AllocationDto {
   @IsUUID() lotId!: string;
   @IsUUID() locationId!: string;
-  @IsString() @Matches(/^\d{1,12}$/) quantityKg!: string;
+  @Transform(({ value }) => typeof value === "string" ? value.trim().replace(",", ".") : value) @IsString() @Matches(/^\d{1,12}(?:\.\d{1,3})?$/) quantityKg!: string;
 }
 class ShipmentLineDto {
   @IsUUID() itemId!: string;
@@ -83,9 +83,10 @@ class ShipmentDto {
   lines!: ShipmentLineDto[];
 }
 class DirectSaleDto {
+  @IsOptional() @IsIn(["PRODUCT", "WASTE"]) kind?: "PRODUCT" | "WASTE";
   @IsString() @Matches(/\S/) @MaxLength(150) customerName!: string;
   @IsUUID() itemId!: string;
-  @IsString() @Matches(/^\d{1,12}$/) quantityKg!: string;
+  @Transform(({ value }) => typeof value === "string" ? value.trim().replace(",", ".") : value) @IsString() @Matches(/^\d{1,12}(?:\.\d{1,3})?$/) quantityKg!: string;
   @IsString() @Matches(/^\d{1,12}(?:\.\d{1,6})?$/) unitPricePerKg!: string;
   @IsIn(["USD", "UZS"]) currency!: "USD" | "UZS";
 }
@@ -232,7 +233,7 @@ export class SalesController {
       req.actor.id,
       id,
       epoch,
-      "SHIPMENT",
+      dto.kind === "WASTE" ? "WASTE_SALE" : "SHIPMENT",
       dto,
       async (tx) => {
         const quantity = decimal(kg(dto.quantityKg));
@@ -241,18 +242,19 @@ export class SalesController {
         const item = await tx.item.findUniqueOrThrow({
           where: { id: dto.itemId },
         });
+        const kind = dto.kind ?? "PRODUCT";
         ensure(
-          item.kind === "PRODUCT" && item.isActive,
-          "Выберите готовую продукцию",
+          item.kind === kind && item.isActive,
+          kind === "WASTE" ? "Выберите действующий вид отходов" : "Выберите готовую продукцию",
         );
         const candidates = await tx.inventoryBalance.findMany({
           where: {
             lot: {
               itemId: item.id,
-              OR: [{ stockKind: "PRODUCT" }, { stockKind: null }],
+              OR: [{ stockKind: kind === "WASTE" ? "MATERIAL" : "PRODUCT" }, { stockKind: null }],
               isCarryover: false,
             },
-            location: { kind: "STORAGE", name: "Склад для продажи" },
+            location: { kind: "STORAGE", ...(kind === "PRODUCT" ? { name: "Склад для продажи" } : {}) },
             onHandKg: { gt: 0 },
           },
           orderBy: [
@@ -286,7 +288,7 @@ export class SalesController {
         }
         ensure(
           remaining.isZero(),
-          "Недостаточно готовой продукции на складе для продажи",
+          kind === "WASTE" ? "Недостаточно свободного остатка отходов на складах" : "Недостаточно готовой продукции на складе для продажи",
         );
         const name = dto.customerName.trim();
         await lock(tx, `customer-name:${name.toLowerCase()}`);
@@ -299,7 +301,7 @@ export class SalesController {
         });
         if (!customer) customer = await tx.customer.create({ data: { name } });
         await tx.businessDocument.create({
-          data: { id, commandId: id, type: "SHIPMENT" },
+          data: { id, commandId: id, type: kind === "WASTE" ? "WASTE_SALE" : "SHIPMENT" },
         });
         await tx.shipment.create({
           data: {
@@ -307,7 +309,7 @@ export class SalesController {
             documentId: id,
             customerId: customer.id,
             currency: dto.currency,
-            kind: "PRODUCT",
+            kind,
           },
         });
         const total = quantity.times(price);
@@ -327,7 +329,7 @@ export class SalesController {
             allocation.lotId,
             allocation.locationId,
             allocation.quantityKg.negated(),
-            "SHIPMENT",
+            kind === "WASTE" ? "WASTE_SALE" : "SHIPMENT",
           );
           await tx.shipmentAllocation.create({
             data: { shipmentLineId: line.id, ...allocation },

@@ -58,6 +58,7 @@ type Dashboard = {
   stockByMaterial: { id: string; name: string; quantityKg: string }[];
   rawStockGroups?: { category: string; quantityKg: string }[];
   ungroupedRawKg?: string;
+  stockByFeaturedWaste?: { id: string; name: string; quantityKg: string }[];
   productStockKg?: string;
   stockByProduct?: { id: string; name: string; quantityKg: string }[];
   purchases: number;
@@ -500,6 +501,13 @@ function FactoryApp() {
                 </View>)}
                 {data?.productStockKg !== undefined && !data.stockByProduct?.length && <Text style={s.heroSmall}>Готовой продукции на складах пока нет</Text>}
               </View>
+              {!!data?.stockByFeaturedWaste?.length && <View style={{ marginTop: 16 }}>
+                <Text style={s.heroSmall}>Отходы · выбранные виды</Text>
+                {data.stockByFeaturedWaste.map(waste => <View key={waste.id} style={s.heroMaterialRow}>
+                  <Text style={s.heroMaterialName}>{waste.name}</Text>
+                  <Text style={s.heroMaterialWeight}>{format(waste.quantityKg)} кг</Text>
+                </View>)}
+              </View>}
               <View style={s.heroBottom}>
                 <Text style={s.heroSmall}>{data?.productStockKg !== undefined ? `${format(data.productStockKg)} кг` : "Загрузка данных"}</Text>
                 <View style={{ flex: 1 }} />
@@ -630,13 +638,9 @@ function FactoryApp() {
         )}
         {tab === "Склад" && (
           <>
-            <Button
-              title="+ Принять сырьё"
-              onPress={() => open("purchase")}
-              disabled={!canWrite}
-            />
             <Workspace
               section="inventory"
+              disabled={!canWrite}
               refreshKey={workspaceRefresh}
               onChanged={() => void reload()}
             />
@@ -721,15 +725,6 @@ function FactoryApp() {
                   disabled={!canWrite}
                   onChanged={() => void reload()}
                 />
-                <View style={s.actions}>
-                  <Action
-                    icon="people-outline"
-                    title="Поставщик"
-                    subtitle={`${suppliers.length} в справочнике`}
-                    onPress={() => open("supplier")}
-                    disabled={!canWrite}
-                  />
-                </View>
                 <Heading title="Параметры завода" />
                 <View style={s.list}>
                   {[
@@ -1049,13 +1044,13 @@ function EntryModal({
                   />
                   <Field
                     label="Возврат поставщику при приёмке, кг"
-                    placeholder="0" keyboardType="number-pad"
+                    placeholder="0" keyboardType="decimal-pad"
                     value={returnedKg} onChangeText={setReturnedKg}
                   />
                   <Field
                     label="Скидка по договорённости, кг"
                     placeholder="0"
-                    keyboardType="number-pad"
+                    keyboardType="decimal-pad"
                     value={discountKg}
                     onChangeText={setDiscountKg}
                   />

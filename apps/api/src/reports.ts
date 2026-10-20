@@ -1,3 +1,4 @@
+import { Costing, addCosts, scaleCost } from "./costing";
 import { effectivePurchase, revisionInclude } from "./purchase-values";
 import { page, PageQuery } from "./pagination";
 import {
@@ -26,6 +27,74 @@ class Filters {
 @Allow("audit.read")
 export class ReportsController {
   constructor(private db: Database) {}
+  @Get("reports/production-period") async productionPeriod(@Query() q: Filters) {
+    ensure(q.from && q.to, "Выберите начало и конец периода");
+    const from = new Date(q.from.length === 10 ? `${q.from}T00:00:00+05:00` : q.from);
+    const to = new Date(q.to.length === 10 ? `${q.to}T00:00:00+05:00` : q.to);
+    ensure(Number.isFinite(from.getTime()) && Number.isFinite(to.getTime()) && from < to, "Укажите корректный период; конец периода не включается");
+    return this.db.$transaction(async tx => {
+      const batches = await tx.productionBatch.findMany({
+        where: { status: "COMPLETED", completedAt: { gte: from, lt: to }, equipmentId: q.equipmentId, documents: { some: { type: "PRODUCTION_COMPLETE", status: "POSTED" } } },
+        include: {
+          nextBatch: { select: { id: true } },
+          inputs: { include: { lot: { include: { item: true, originDocument: true } } } },
+          outputs: { include: { lot: { include: { item: true } } } },
+          documents: { where: { type: "PRODUCTION_COMPLETE", status: "POSTED" }, include: { kettleRecoveries: { where: { status: "POSTED" } } } },
+        },
+      });
+      const included = new Set(batches.map(batch => batch.id));
+      const costing = new Costing(tx);
+      const externalInputs = batches.flatMap(batch => batch.inputs).filter(input => !((input.lot.isCarryover || input.lot.item.kind === "WASTE") && included.has(input.lot.originDocument.batchId ?? "")));
+      const inputKg = externalInputs.reduce((sum, input) => sum.plus(input.quantityKg), decimal("0"));
+      const incomingCarryoverKg = externalInputs.filter(input => input.lot.isCarryover).reduce((sum, input) => sum.plus(input.quantityKg), decimal("0"));
+      const grossLoadedKg = batches.flatMap(batch => batch.inputs).reduce((sum, input) => sum.plus(input.quantityKg), decimal("0"));
+      const inputCost = await costing.total(externalInputs);
+      const products = new Map<string, { id: string; name: string; quantityKg: ReturnType<typeof decimal>; values: ReturnType<typeof scaleCost>[] }>();
+      const wastes = new Map<string, { id: string; name: string; quantityKg: ReturnType<typeof decimal> }>();
+      const carryValues: ReturnType<typeof scaleCost>[] = [];
+      let carryoverKg = decimal("0"), recoveryDifferenceKg = decimal("0");
+      for (const batch of batches) {
+        for (const output of batch.outputs) {
+          if (output.lot.item.kind === "PRODUCT") {
+            const row = products.get(output.lot.itemId) ?? { id: output.lot.itemId, name: output.lot.item.name, quantityKg: decimal("0"), values: [] };
+            row.quantityKg = row.quantityKg.plus(output.quantityKg);
+            row.values.push(scaleCost(await costing.unit(output.lotId), output.quantityKg));
+            products.set(row.id, row);
+          } else if (output.lot.item.kind === "WASTE") {
+            const row = wastes.get(output.lot.itemId) ?? { id: output.lot.itemId, name: output.lot.item.name, quantityKg: decimal("0") };
+            row.quantityKg = row.quantityKg.plus(output.quantityKg);
+            wastes.set(row.id, row);
+          }
+        }
+        const completion = batch.documents[0];
+        const difference = (completion?.kettleRecoveries ?? []).reduce((sum, doc) => sum.plus(doc.differenceKg ?? 0), decimal("0"));
+        recoveryDifferenceKg = recoveryDifferenceKg.plus(difference);
+        if (batch.nextBatch && included.has(batch.nextBatch.id)) continue;
+        const quantity = batch.carryoverKg.plus(difference);
+        carryoverKg = carryoverKg.plus(quantity);
+        if (quantity.gt(0) && completion) {
+          const carry = await tx.stockLot.findFirst({ where: { originDocumentId: completion.id, isCarryover: true } });
+          carryValues.push(carry ? scaleCost(await costing.unit(carry.id), quantity) : { known: false, amounts: {} });
+        }
+      }
+      const productKg = [...products.values()].reduce((sum, row) => sum.plus(row.quantityKg), decimal("0"));
+      const productCost = addCosts([...products.values()].flatMap(row => row.values));
+      const wasteKg = [...wastes.values()].reduce((sum, row) => sum.plus(row.quantityKg), decimal("0"));
+      const reusedWasteKg = batches.flatMap(batch => batch.inputs).filter(input => input.lot.item.kind === "WASTE" && included.has(input.lot.originDocument.batchId ?? "")).reduce((sum, input) => sum.plus(input.quantityKg), decimal("0"));
+      const lossKg = batches.reduce((sum, batch) => sum.plus(batch.differenceKg ?? 0), decimal("0"));
+      const percent = (weight: ReturnType<typeof decimal>) => inputKg.gt(0) ? weight.div(inputKg).times(100).toString() : null;
+      const average = (value: ReturnType<typeof addCosts>, quantity: ReturnType<typeof decimal>) => quantity.gt(0) ? scaleCost(value, decimal("1").div(quantity)) : null;
+      return {
+        from: from.toISOString(), toExclusive: to.toISOString(), timezone: "Asia/Tashkent", batchCount: batches.length,
+        inputKg: inputKg.toString(), freshInputKg: inputKg.minus(incomingCarryoverKg).toString(), incomingCarryoverKg: incomingCarryoverKg.toString(), grossLoadedKg: grossLoadedKg.toString(),
+        productKg: productKg.toString(), wasteKg: wasteKg.toString(), reusedWasteKg: reusedWasteKg.toString(), netWasteKg: wasteKg.minus(reusedWasteKg).toString(),
+        wastePercent: percent(wasteKg), lossKg: lossKg.toString(), lossPercent: percent(lossKg), carryoverKg: carryoverKg.toString(), recoveryDifferenceKg: recoveryDifferenceKg.toString(),
+        inputCost, productCost, averageUnitCost: average(productCost, productKg), carryoverCost: addCosts(carryValues),
+        products: [...products.values()].map(row => { const cost = addCosts(row.values); return { id: row.id, name: row.name, quantityKg: row.quantityKg.toString(), cost, unitCost: average(cost, row.quantityKg) }; }),
+        wastes: [...wastes.values()].map(row => ({ ...row, quantityKg: row.quantityKg.toString() })),
+      };
+    }, { isolationLevel: "RepeatableRead", timeout: 30000 });
+  }
   @Get("reports/sales") async salesSummary(@Query() q: Filters) {
     ensure(
       q.from &&
@@ -45,12 +114,15 @@ export class ReportsController {
           document: { status: "POSTED", occurredAt: { gte: from, lt: to }, ...(lastClose ? { command: { reportingPeriodId: lastClose.id } } : {}) },
         },
       },
+      orderBy: [{ shipment: { document: { occurredAt: "desc" } } }, { shipmentId: "desc" }, { id: "asc" }],
       select: {
+        id: true,
         itemId: true,
+        unitPricePerKg: true,
         quantityKg: true,
         amount: true,
         item: { select: { name: true } },
-        shipment: { select: { currency: true } },
+        shipment: { select: { id: true, currency: true, customer: { select: { name: true } }, document: { select: { occurredAt: true } } } },
       },
     });
     const groups = new Map<
@@ -82,12 +154,22 @@ export class ReportsController {
         a.name.localeCompare(b.name, "ru") ||
         a.currency.localeCompare(b.currency),
     );
+    const sales = new Map<string, { id: string; customerName: string; occurredAt: string; currency: string; quantityKg: string; amount: string; lines: { id: string; itemId: string; name: string; quantityKg: string; unitPricePerKg: string; amount: string }[] }>();
+    for (const line of lines) {
+      const sale = sales.get(line.shipment.id) ?? { id: line.shipment.id, customerName: line.shipment.customer.name, occurredAt: line.shipment.document.occurredAt.toISOString(), currency: line.shipment.currency, quantityKg: "0", amount: "0", lines: [] };
+      sale.quantityKg = decimal(sale.quantityKg).plus(line.quantityKg).toString();
+      sale.amount = decimal(sale.amount).plus(line.amount).toString();
+      sale.lines.push({ id: line.id, itemId: line.itemId, name: line.item.name, quantityKg: line.quantityKg.toString(), unitPricePerKg: line.unitPricePerKg.toString(), amount: line.amount.toString() });
+      sales.set(sale.id, sale);
+    }
     return {
+      sales: [...sales.values()],
       from: q.from,
       to: q.to,
       rows: rows.map((r) => ({
         ...r,
         quantityKg: r.quantityKg.toString(),
+        averageUnitPrice: r.quantityKg.gt(0) ? r.amount.div(r.quantityKg).toString() : null,
         amount: r.amount.toString(),
       })),
       totalKg: rows

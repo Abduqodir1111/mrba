@@ -28,6 +28,7 @@ import { AccessGuard, Allow, AuthRequest } from "./identity";
 import { ensure, lock } from "./factory";
 import { page, PageQuery } from "./pagination";
 class CatalogEdit {
+  @IsOptional() @IsBoolean() showOnDashboard?: boolean;
   @IsOptional() @IsIn(["STORAGE", "SALE"]) wasteDisposition?: string;
   @IsInt() @Min(1) version!: number;
   @IsString() @Matches(/\S/) @MaxLength(150) name!: string;
@@ -238,6 +239,10 @@ export class AdminController {
             "Назначение можно указать только для отходов",
           );
           data.wasteDisposition = dto.wasteDisposition;
+        }
+        if (dto.showOnDashboard !== undefined) {
+          ensure(kind === "items" && before.kind === "WASTE", "Показ на главной можно настроить только для отходов");
+          data.showOnDashboard = dto.showOnDashboard;
         }
         const after = await model.update({ where: { id }, data });
         if (kind === "materials")

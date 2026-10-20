@@ -41,6 +41,8 @@ before(async () => {
   assert.equal(new URL(process.env.DATABASE_URL!).pathname, "/mrba_test");
   app = await createApp();
   await app.init();
+  // Keep one listener for the suite instead of opening and closing it per request.
+  await app.listen(0, "127.0.0.1");
   db = app.get(Database);
   token = (
     await request(app.getHttpServer())
@@ -1993,4 +1995,277 @@ test("month close requires an owner role even with factory write permissions", a
   await request(app.getHttpServer()).post("/api/v1/month-closes").set("Authorization",`Bearer ${access}`).set("Idempotency-Key",randomUUID()).set("X-Recovery-Epoch",epoch).send({}).expect(409);
   assert.equal(await db.monthClose.count(),count);
   await request(app.getHttpServer()).post("/api/v1/month-closes/opening").set("Authorization",`Bearer ${access}`).set("Idempotency-Key",randomUUID()).set("X-Recovery-Epoch",epoch).send({closeId:randomUUID(),lines:[]}).expect(409);
+});
+
+
+test("dashboard waste visibility is opt-in, editable and separate from products", async () => {
+  const selected = (await post("/items", { name: `Featured waste ${suffix}`, kind: "WASTE", showOnDashboard: true })).body;
+  const hidden = (await post("/items", { name: `Hidden waste ${suffix}`, kind: "WASTE" })).body;
+  const dashboard = async () => (await request(app.getHttpServer()).get("/api/v1/dashboard").set("Authorization", `Bearer ${token}`).expect(200)).body;
+  const first = await dashboard();
+  assert.deepEqual(first.stockByFeaturedWaste.find((i: any) => i.id === selected.id), { id: selected.id, name: selected.name, quantityKg: "0" });
+  assert.ok(!first.stockByFeaturedWaste.some((i: any) => i.id === hidden.id));
+  assert.ok(!first.stockByProduct.some((i: any) => i.id === selected.id));
+  const source = await db.stockLot.findUniqueOrThrow({ where: { id: lot } });
+  const fixtureLot = await db.stockLot.create({ data: { itemId: selected.id, stockKind: "MATERIAL", originDocumentId: source.originDocumentId, balances: { create: [{ locationId: location, onHandKg: "12.5" }, { locationId: salesLocation, onHandKg: "7.25" }] } } });
+  const withStock = await dashboard();
+  assert.equal(withStock.stockByFeaturedWaste.find((i: any) => i.id === selected.id).quantityKg, "19.75");
+  await db.inventoryBalance.deleteMany({ where: { lotId: fixtureLot.id } });
+  assert.equal(withStock.productStockKg, first.productStockKg);
+  await post(`/catalog/items/${selected.id}/edit`, { name: selected.name, version: 1, isActive: true, showOnDashboard: false });
+  assert.ok(!(await dashboard()).stockByFeaturedWaste.some((i: any) => i.id === selected.id));
+  await post(`/catalog/items/${hidden.id}/edit`, { name: hidden.name, version: 1, isActive: true, showOnDashboard: true });
+  assert.ok((await dashboard()).stockByFeaturedWaste.some((i: any) => i.id === hidden.id));
+  await post(`/catalog/items/${hidden.id}/edit`, { name: hidden.name, version: 2, isActive: false });
+  assert.ok(!(await dashboard()).stockByFeaturedWaste.some((i: any) => i.id === hidden.id));
+  await post(`/catalog/items/${product}/edit`, { name: `F product ${suffix}`, version: (await db.item.findUniqueOrThrow({ where: { id: product } })).version, isActive: true, showOnDashboard: true }, randomUUID(), 409);
+});
+
+test("fractional weights survive reserves, transfers, kettle loading, completion, carryover and sales", async () => {
+  const mat = (await post("/materials", { name: `Fractional kettle ${randomUUID()}` })).body.id;
+  const prod = (await post("/items", { name: `Fractional product ${randomUUID()}`, kind: "PRODUCT" })).body.id;
+  await post("/purchase-receipts", { currency: "UZS", lines: [{ materialId: mat, quantity: "10.125", unit: "kg", unitPricePerKg: "100" }] });
+  const raw = await db.stockLot.findFirstOrThrow({ where: { itemId: mat } });
+  const hold = (await post("/inventory/reserve", { lotId: raw.id, locationId: location, quantityKg: "0,125", reason: "Fractional reserve" })).body;
+  assert.equal((await db.stockReservation.findUniqueOrThrow({ where: { id: hold.id } })).quantityKg.toString(), "0.125");
+  await post(`/reservations/${hold.id}/release`, { reason: "Fractional release" });
+  await post("/inventory/transfer", { lotId: raw.id, locationId: location, destinationId: salesLocation, quantityKg: "0.125", reason: "Fractional transfer" });
+  const eq = (await post("/equipment", { name: `Fractional furnace ${randomUUID()}`, direction: "COPPER" })).body.id;
+  const b = (await post("/batches", { equipmentId: eq })).body;
+  await post(`/batches/${b.id}/load`, { lines: [{ itemId: mat, quantityKg: "2,5" }] });
+  assert.equal((await db.inventoryBalance.aggregate({ where: { locationId: b.wipLocationId }, _sum: { onHandKg: true } }))._sum.onHandKg?.toString(), "2.5");
+  await post(`/batches/${b.id}/load`, { lines: [{ itemId: mat, quantityKg: "0.0001" }] }, randomUUID(), 400);
+  const finished = (await post(`/batches/${b.id}/complete`, { version: 1, handover: true, locationId: location, carryoverItemId: prod, lossKg: "0,025", outputs: [{ itemId: prod, quantityKg: "1.25" }, { itemId: waste, quantityKg: "0.125" }] })).body;
+  assert.equal(finished.lossKg, "0.025");
+  assert.equal(finished.carryoverKg, "1.1");
+  assert.equal((await db.inventoryBalance.aggregate({ where: { locationId: (await db.productionBatch.findUniqueOrThrow({ where: { id: finished.nextBatchId } })).wipLocationId }, _sum: { onHandKg: true } }))._sum.onHandKg?.toString(), "1.1");
+  const sold = (await post("/sales", { customerName: `Fractional buyer ${suffix}`, itemId: prod, quantityKg: "0,25", unitPricePerKg: "100", currency: "UZS" })).body;
+  assert.ok(sold.id);
+  const saleLine = await db.shipmentLine.findFirstOrThrow({ where: { itemId: prod } });
+  assert.equal(saleLine.quantityKg.toString(), "0.25");
+  assert.equal(saleLine.amount.toString(), "25");
+});
+
+test("manual waste receipts preserve catalog kind, valuation, idempotency and ledger reversal", async () => {
+  const itemId = (await post("/items", { name: `Manual waste ${randomUUID()}`, kind: "WASTE", wasteDisposition: "STORAGE" })).body.id;
+  const materialsBefore = await db.material.count();
+  const purchasesBefore = await db.purchaseReceipt.count();
+  const key = randomUUID();
+  const payload = { itemId, locationId: location, quantityKg: "2,5", currency: "UZS", unitPricePerKg: "100", notes: "Actual recovered waste" };
+  const receipt = (await post("/waste/receive", payload, key)).body;
+  assert.deepEqual((await post("/waste/receive", payload, key)).body, receipt);
+  const balance = await db.inventoryBalance.findUniqueOrThrow({ where: { lotId_locationId: { lotId: receipt.lotId, locationId: location } }, include: { lot: { include: { item: true } } } });
+  assert.equal(balance.onHandKg.toString(), "2.5");
+  assert.equal(balance.lot.item.kind, "WASTE");
+  assert.equal(balance.lot.stockKind, null);
+  assert.deepEqual(await new Costing(db).unit(receipt.lotId), { known: true, amounts: { UZS: "100" } });
+  assert.equal(await db.material.count(), materialsBefore);
+  assert.equal(await db.purchaseReceipt.count(), purchasesBefore);
+  await post("/waste/receive", { ...payload, itemId: material }, randomUUID(), 409);
+  await post("/waste/receive", { ...payload, quantityKg: "0" }, randomUUID(), 409);
+  await post("/waste/receive", { ...payload, quantityKg: "0.0001" }, randomUUID(), 400);
+  const unknown = (await post("/waste/receive", { itemId, locationId: salesLocation, quantityKg: "0.125", currency: "UZS" })).body;
+  assert.deepEqual(await new Costing(db).unit(unknown.lotId), { known: false, amounts: {} });
+  const eq = (await post("/equipment", { name: `Waste intake furnace ${randomUUID()}`, direction: "COPPER" })).body.id;
+  const batch = (await post("/batches", { equipmentId: eq })).body;
+  await post(`/batches/${batch.id}/load`, { lines: [{ itemId, quantityKg: "1.125" }] });
+  assert.equal((await db.inventoryBalance.aggregate({ where: { locationId: batch.wipLocationId }, _sum: { onHandKg: true } }))._sum.onHandKg?.toString(), "1.125");
+  await post(`/batches/${batch.id}/cancel`, { reason: "Restore waste intake test" });
+  await post(`/documents/${key}/reverse`, { reason: "Used waste receipt is protected" }, randomUUID(), 409);
+  await post(`/documents/${unknown.id}/reverse`, { reason: "Correct unused waste receipt" });
+  assert.equal((await db.inventoryBalance.findUniqueOrThrow({ where: { lotId_locationId: { lotId: unknown.lotId, locationId: salesLocation } } })).onHandKg.toString(), "0");
+});
+
+test("editing only the latest load returns original lots, applies exact replacements and rolls back failures", async () => {
+  const ids: string[] = [];
+  for (const price of ["100", "200"]) {
+    const id = (await post("/materials", { name: `Load edit ${randomUUID()}` })).body.id;
+    ids.push(id);
+    await post("/purchase-receipts", { currency: "UZS", lines: [{ materialId: id, quantity: "10", unit: "kg", unitPricePerKg: price }] });
+  }
+  const eq = (await post("/equipment", { name: `Load edit kettle ${randomUUID()}`, direction: "COPPER" })).body.id;
+  const b = (await post("/batches", { equipmentId: eq })).body;
+  const load = `/batches/${b.id}/load`;
+  const first = (await post(load, { lines: [{ itemId: ids[0], quantityKg: "1.25" }] })).body;
+  const last = (await post(load, { lines: [{ itemId: ids[0], quantityKg: "2.5" }] })).body;
+  const path = `${load}/edit`;
+  await post(path, { loadId: first.id, reason: "Cannot edit an earlier load", lines: [] }, randomUUID(), 409);
+  const key = randomUUID();
+  const payload = { loadId: last.id, reason: "Wrong material and weight", lines: [{ itemId: ids[0], quantityKg: "1,5" }, { itemId: ids[1], quantityKg: "0.75" }] };
+  const corrected = (await rawPost(path, payload, key).expect(r => assert.equal(r.status, 201, JSON.stringify(r.body)))).body;
+  assert.deepEqual((await post(path, payload, key)).body, corrected);
+  const atWip = () => db.inventoryBalance.findMany({ where: { locationId: b.wipLocationId, onHandKg: { gt: 0 } }, include: { lot: true } });
+  const rows = await atWip();
+  assert.equal(rows.filter(r => r.lot.itemId === ids[0]).reduce((sum, r) => sum.plus(r.onHandKg), new Prisma.Decimal(0)).toString(), "2.75");
+  assert.equal(rows.filter(r => r.lot.itemId === ids[1]).reduce((sum, r) => sum.plus(r.onHandKg), new Prisma.Decimal(0)).toString(), "0.75");
+  assert.deepEqual(await new Costing(db).total(rows.map(r => ({ lotId: r.lotId, quantityKg: r.onHandKg }))), { known: true, amounts: { UZS: "425" } });
+  const failedKey = randomUUID();
+  await post(path, { ...payload, loadId: corrected.id, lines: [{ itemId: ids[0], quantityKg: "100" }] }, failedKey, 409);
+  assert.equal(await db.businessDocument.count({ where: { id: failedKey } }), 0);
+  assert.deepEqual((await atWip()).map(r => [r.lotId, r.onHandKg.toString()]), rows.map(r => [r.lotId, r.onHandKg.toString()]));
+  await post(path, payload, randomUUID(), 409);
+  const listing = (await request(app.getHttpServer()).get("/api/v1/batches?limit=100&search=" + encodeURIComponent(b.number)).set("Authorization", `Bearer ${token}`).expect(200)).body;
+  const shown = listing.items.find((row: any) => row.id === b.id);
+  assert.equal(shown.lastLoad.id, corrected.id);
+  assert.equal(shown.lastLoad.lines.length, 2);
+  const races = await Promise.all([rawPost(path, { loadId: corrected.id, reason: "Remove mistaken load", lines: [] }), rawPost(path, { loadId: corrected.id, reason: "Another device", lines: [{ itemId: ids[1], quantityKg: "2" }] })]);
+  assert.deepEqual(races.map(r => r.status).sort(), [201, 409]);
+  const current = races.find(r => r.status === 201)!.body;
+  await post(path, { loadId: current.id, reason: "Keep the first load only", lines: [] });
+  assert.equal((await atWip()).reduce((sum, r) => sum.plus(r.onHandKg), new Prisma.Decimal(0)).toString(), "1.25");
+  await post(`/batches/${b.id}/cancel`, { reason: "Close edit fixture" });
+  await post(path, { loadId: current.id, reason: "Closed batch", lines: [] }, randomUUID(), 409);
+});
+
+test("editing a new load preserves the previous shift carryover", async () => {
+  const b = await handoverFixture("5.125");
+  const complete = (await post(`/batches/${b.id}/complete`, { version: 1, handover: true, locationId: location, carryoverItemId: product, lossKg: "0.125", outputs: [{ itemId: product, quantityKg: "1" }] })).body;
+  const child = await db.productionBatch.findUniqueOrThrow({ where: { id: complete.nextBatchId } });
+  const mat = (await post("/materials", { name: `Carryover load edit ${randomUUID()}` })).body.id;
+  await post("/purchase-receipts", { currency: "UZS", lines: [{ materialId: mat, quantity: "3.5", unit: "kg", unitPricePerKg: "10" }] });
+  const last = (await post(`/batches/${child.id}/load`, { lines: [{ itemId: mat, quantityKg: "1.5" }] })).body;
+  await post(`/batches/${child.id}/load/edit`, { loadId: last.id, reason: "Correct extra raw weight", lines: [{ itemId: mat, quantityKg: "0.25" }] });
+  const rows = await db.inventoryBalance.findMany({ where: { locationId: child.wipLocationId }, include: { lot: true } });
+  assert.equal(rows.filter(r => r.lot.isCarryover).reduce((s, r) => s.plus(r.onHandKg), new Prisma.Decimal(0)).toString(), "4");
+  assert.equal(rows.filter(r => r.lot.itemId === mat).reduce((s, r) => s.plus(r.onHandKg), new Prisma.Decimal(0)).toString(), "0.25");
+});
+
+test("completed production period totals use weighted costs and exclude internal carryover", async () => {
+  const mat = (await post("/materials", { name: `Period raw ${randomUUID()}` })).body.id;
+  const prod = (await post("/items", { name: `Period product ${randomUUID()}`, kind: "PRODUCT" })).body.id;
+  const eq = (await post("/equipment", { name: `Period furnace ${randomUUID()}`, direction: "COPPER" })).body.id;
+  await post("/purchase-receipts", { currency: "UZS", lines: [{ materialId: mat, quantity: "10", unit: "kg", unitPricePerKg: "100" }] });
+  const a = (await post("/batches", { equipmentId: eq })).body;
+  await post(`/batches/${a.id}/load`, { lines: [{ itemId: mat, quantityKg: "10" }] });
+  const first = (await post(`/batches/${a.id}/complete`, { version: 1, handover: true, locationId: location, carryoverItemId: prod, lossKg: "0.5", outputs: [{ itemId: prod, quantityKg: "5" }, { itemId: waste, quantityKg: "1" }] })).body;
+  const before = await db.productionBatch.findUniqueOrThrow({ where: { id: a.id } });
+  await post("/purchase-receipts", { currency: "UZS", lines: [{ materialId: mat, quantity: "2", unit: "kg", unitPricePerKg: "200" }] });
+  await post(`/batches/${first.nextBatchId}/load`, { lines: [{ itemId: mat, quantityKg: "2" }] });
+  await post(`/batches/${first.nextBatchId}/complete`, { version: 1, locationId: location, outputs: [{ itemId: prod, quantityKg: "4" }, { itemId: waste, quantityKg: "1" }] });
+  const after = await db.productionBatch.findUniqueOrThrow({ where: { id: first.nextBatchId } });
+  const start = new Date(before.completedAt!.getTime() - 1).toISOString();
+  const end = new Date(after.completedAt!.getTime() + 1).toISOString();
+  const read = (from: string, to: string, equipmentId = eq) => request(app.getHttpServer()).get(`/api/v1/reports/production-period?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&equipmentId=${equipmentId}`).set("Authorization", `Bearer ${token}`);
+  const combined = (await read(start, end).expect(200)).body;
+  assert.equal(combined.batchCount, 2);
+  assert.equal(combined.inputKg, "12");
+  assert.equal(combined.grossLoadedKg, "15.5");
+  assert.equal(combined.incomingCarryoverKg, "0");
+  assert.equal(combined.carryoverKg, "0");
+  assert.equal(combined.productKg, "9");
+  assert.equal(combined.wasteKg, "2");
+  assert.equal(combined.lossKg, "1");
+  assert.deepEqual(combined.inputCost, { known: true, amounts: { UZS: "1400" } });
+  assert.equal(new Prisma.Decimal(combined.productCost.amounts.UZS).toFixed(6), "1400.000000");
+  assert.equal(new Prisma.Decimal(combined.averageUnitCost.amounts.UZS).toFixed(6), "155.555556");
+  assert.equal(combined.products[0].quantityKg, "9");
+  assert.equal(combined.wastes.find((row: any) => row.id === waste).quantityKg, "2");
+  const outgoing = (await read(start, after.completedAt!.toISOString()).expect(200)).body;
+  assert.equal(outgoing.batchCount, 1);
+  assert.equal(outgoing.carryoverKg, "3.5");
+  const incoming = (await read(after.completedAt!.toISOString(), end).expect(200)).body;
+  assert.equal(incoming.batchCount, 1);
+  assert.equal(incoming.inputKg, "5.5");
+  assert.equal(incoming.incomingCarryoverKg, "3.5");
+  assert.equal(incoming.freshInputKg, "2");
+  const empty = (await read(end, new Date(after.completedAt!.getTime() + 1000).toISOString()).expect(200)).body;
+  assert.equal(empty.batchCount, 0);
+  assert.equal(empty.averageUnitCost, null);
+  await read(end, start).expect(409);
+});
+
+test("production period separates reused waste and recalculates unknown prices without mixing currencies", async () => {
+  const mat = (await post("/materials", { name: `Waste period raw ${randomUUID()}` })).body.id;
+  const prod = (await post("/items", { name: `Waste period product ${randomUUID()}`, kind: "PRODUCT" })).body.id;
+  const wasteId = (await post("/items", { name: `Waste period waste ${randomUUID()}`, kind: "WASTE", wasteDisposition: "STORAGE" })).body.id;
+  const eq = (await post("/equipment", { name: `Waste period furnace ${randomUUID()}`, direction: "COPPER" })).body.id;
+  const start = new Date().toISOString();
+  await post("/purchase-receipts", { currency: "UZS", lines: [{ materialId: mat, quantity: "10", unit: "kg", unitPricePerKg: "100" }] });
+  async function finish(itemId: string, quantityKg: string, productKg: string, wasteKg: string) {
+    const b = (await post("/batches", { equipmentId: eq })).body;
+    await post(`/batches/${b.id}/load`, { lines: [{ itemId, quantityKg }] });
+    await post(`/batches/${b.id}/complete`, { version: 1, locationId: location, outputs: [{ itemId: prod, quantityKg: productKg }, { itemId: wasteId, quantityKg: wasteKg }] });
+  }
+  await finish(mat, "10", "8", "2");
+  await finish(wasteId, "2", "1.5", "0.5");
+  const read = () => request(app.getHttpServer()).get(`/api/v1/reports/production-period?from=${encodeURIComponent(start)}&to=${encodeURIComponent(new Date(Date.now() + 1000).toISOString())}&equipmentId=${eq}`).set("Authorization", `Bearer ${token}`).expect(200);
+  const reused = (await read()).body;
+  assert.equal(reused.inputKg, "10");
+  assert.equal(reused.wasteKg, "2.5");
+  assert.equal(reused.reusedWasteKg, "2");
+  assert.equal(reused.netWasteKg, "0.5");
+  assert.equal(reused.productKg, "9.5");
+  const unpriced = (await post("/purchase-receipts", { currency: "USD", lines: [{ materialId: mat, quantity: "2", unit: "kg" }] })).body;
+  await finish(mat, "2", "1.5", "0.5");
+  assert.equal((await read()).body.averageUnitCost.known, false);
+  const line = await db.purchaseLine.findFirstOrThrow({ where: { receiptId: unpriced.id } });
+  await post(`/purchase-lines/${line.id}/amend`, { version: 0, currency: "USD", returnedKg: "0", discountKg: "0", discountPercent: "0", unitPricePerKg: "10" });
+  const priced = (await read()).body;
+  assert.equal(priced.averageUnitCost.known, true);
+  assert.equal(priced.productCost.amounts.UZS, "1000");
+  assert.equal(priced.productCost.amounts.USD, "20");
+  assert.equal(priced.inputKg, "12");
+  assert.equal(priced.productKg, "11");
+});
+
+test("sales period averages are weighted by sold kilograms per product and currency and exclude reversals", async () => {
+  const prod = (await post("/items", { name: `Average sale product ${randomUUID()}`, kind: "PRODUCT" })).body.id;
+  const b = await handoverFixture("6");
+  await post(`/batches/${b.id}/complete`, { version: 1, locationId: location, outputs: [{ itemId: prod, quantityKg: "5" }, { itemId: waste, quantityKg: "1" }] });
+  const payload = { customerName: `Average sale customer ${suffix}`, itemId: prod, currency: "UZS" };
+  await post("/sales", { ...payload, quantityKg: "1.25", unitPricePerKg: "20000" });
+  const second = (await post("/sales", { ...payload, quantityKg: "2.5", unitPricePerKg: "21000" })).body;
+  const usd = (await post("/sales", { ...payload, currency: "USD", quantityKg: "0.25", unitPricePerKg: "3" })).body;
+  const day = new Date(Date.now() + 5 * 3600000).toISOString().slice(0, 10);
+  const read = async () => (await request(app.getHttpServer()).get(`/api/v1/reports/sales?from=${day}&to=${day}`).set("Authorization", `Bearer ${token}`).expect(200)).body.rows.filter((row: any) => row.itemId === prod);
+  const details = (await request(app.getHttpServer()).get(`/api/v1/reports/sales?from=${day}&to=${day}`).set("Authorization", `Bearer ${token}`).expect(200)).body;
+  const secondCard = details.sales.find((sale: any) => sale.id === second.id);
+  assert.equal(secondCard.customerName, payload.customerName);
+  assert.equal(secondCard.occurredAt, (await db.businessDocument.findUniqueOrThrow({ where: { id: second.id } })).occurredAt.toISOString());
+  assert.equal(secondCard.lines[0].name, (await db.item.findUniqueOrThrow({ where: { id: prod } })).name);
+  assert.equal(secondCard.lines[0].quantityKg, "2.5");
+  assert.equal(secondCard.lines[0].unitPricePerKg, "21000");
+  assert.equal(secondCard.amount, "52500");
+  assert.equal(details.sales.reduce((sum: Prisma.Decimal, sale: any) => sum.plus(sale.quantityKg), new Prisma.Decimal(0)).toString(), details.totalKg);
+  const rows = await read();
+  const sums = rows.find((row: any) => row.currency === "UZS");
+  assert.equal(sums.quantityKg, "3.75");
+  assert.equal(sums.amount, "77500");
+  assert.equal(new Prisma.Decimal(sums.averageUnitPrice).toFixed(6), "20666.666667");
+  assert.equal(rows.find((row: any) => row.currency === "USD").averageUnitPrice, "3");
+  await post(`/documents/${usd.id}/reverse`, { reason: "Remove dollar sale" });
+  await post(`/documents/${second.id}/reverse`, { reason: "Remove second sum sale" });
+  const revisedDetails = (await request(app.getHttpServer()).get(`/api/v1/reports/sales?from=${day}&to=${day}`).set("Authorization", `Bearer ${token}`).expect(200)).body;
+  assert.ok(!revisedDetails.sales.some((sale: any) => [second.id, usd.id].includes(sale.id)));
+  const revised = await read();
+  assert.equal(revised.length, 1);
+  assert.equal(revised[0].averageUnitPrice, "20000");
+  assert.equal(revised[0].quantityKg, "1.25");
+  assert.equal(revised[0].amount, "25000");
+});
+
+test("direct waste sale consumes available waste across warehouses, protects reserves and appears in sales report", async () => {
+  const itemId = (await post("/items", { name: `Direct waste sale ${randomUUID()}`, kind: "WASTE", wasteDisposition: "STORAGE" })).body.id;
+  const received = (await post("/waste/receive", { itemId, locationId: location, quantityKg: "2.5", currency: "UZS", unitPricePerKg: "0" })).body;
+  await post("/waste/receive", { itemId, locationId: salesLocation, quantityKg: "1.25", currency: "UZS" });
+  const reserved = (await post("/inventory/reserve", { lotId: received.lotId, locationId: location, quantityKg: "0.5", reason: "Protect reserved waste" })).body;
+  const payload = { kind: "WASTE", itemId, customerName: `Waste buyer ${suffix}`, currency: "UZS", quantityKg: "3.25", unitPricePerKg: "1000" };
+  const key = randomUUID();
+  const result = (await post("/sales", payload, key)).body;
+  assert.deepEqual((await post("/sales", payload, key)).body, result);
+  assert.equal(result.amount, "3250");
+  assert.equal((await db.shipment.findUniqueOrThrow({ where: { id: result.id } })).kind, "WASTE");
+  assert.equal((await db.businessDocument.findUniqueOrThrow({ where: { id: result.id } })).type, "WASTE_SALE");
+  assert.equal(await db.stockMovement.count({ where: { documentId: result.id, type: "WASTE_SALE" } }), 2);
+  assert.equal((await db.inventoryBalance.aggregate({ where: { lot: { itemId } }, _sum: { onHandKg: true } }))._sum.onHandKg?.toString(), "0.5");
+  await post("/sales", { ...payload, quantityKg: "0.001" }, randomUUID(), 409);
+  await post("/sales", { ...payload, itemId: product, quantityKg: "0.1" }, randomUUID(), 409);
+  await post("/sales", { ...payload, kind: "PRODUCT", quantityKg: "0.1" }, randomUUID(), 409);
+  const day = new Date(Date.now() + 5 * 3600000).toISOString().slice(0, 10);
+  const report = (await request(app.getHttpServer()).get(`/api/v1/reports/sales?from=${day}&to=${day}`).set("Authorization", `Bearer ${token}`).expect(200)).body;
+  assert.equal(report.rows.find((row: any) => row.itemId === itemId).quantityKg, "3.25");
+  assert.equal(report.sales.find((sale: any) => sale.id === result.id).customerName, payload.customerName);
+  await post(`/documents/${result.id}/reverse`, { reason: "Reverse test waste sale" });
+  assert.equal((await db.inventoryBalance.aggregate({ where: { lot: { itemId } }, _sum: { onHandKg: true } }))._sum.onHandKg?.toString(), "3.75");
+  await post(`/reservations/${reserved.id}/release`, { reason: "Release test waste" });
 });

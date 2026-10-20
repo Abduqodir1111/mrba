@@ -1,3 +1,4 @@
+import { ProductionPeriodReport } from "./production-period-report";
 import { CompletedMeltDetails } from "./completed-melt-details";
 import { savePdf } from "./save-pdf";
 import { DateTimeField } from "./date-time-field";
@@ -77,9 +78,11 @@ const documentName = (v: string) =>
       TRANSFER: "Перемещение",
       PRODUCTION_ISSUE: "Загрузка плавки",
       PRODUCTION_RETURN: "Возврат из плавки",
+      PRODUCTION_LOAD_EDIT: "Исправление загрузки сырья",
       WASTE_REUSE: "Повторное использование отходов",
       PRODUCTION_COMPLETE: "Завершение плавки",
       WASTE_RECOVERY: "Переработка отходов",
+      WASTE_INTAKE: "Приём отходов",
       WASTE_DISPOSAL: "Списание отходов",
       WASTE_SALE: "Продажа отходов",
       SHIPMENT: "Отгрузка",
@@ -216,6 +219,7 @@ type Field = {
   extraStart?: boolean;
   number?: boolean;
   secure?: boolean;
+  toggle?: boolean;
   weight?: boolean;
   required?: boolean;
   value?: string;
@@ -299,6 +303,8 @@ const actionLabels: Record<string, string> = {
   "Возврат металла из котла": "Вернуть на склад",
   "Загрузка плавки": "Загрузить",
   "Результат плавки": "Завершить плавку",
+  "Приём отходов": "Принять отход",
+  "Исправление последней загрузки": "Сохранить загрузку",
   "Новая плавка": "Начать плавку",
   "Приход сырья": "Принять сырьё",
   "Новая продукция": "Добавить продукцию",
@@ -453,7 +459,7 @@ function Editor({
     (!values.customerName?.trim() ||
       !values.itemId ||
       !saleQuantity?.gt(0) ||
-      !saleQuantity.isInteger() ||
+      saleQuantity.decimalPlaces() > 3 ||
       !salePrice?.gt(0) ||
       !saleAvailable ||
       saleQuantity.gt(saleAvailable));
@@ -471,9 +477,9 @@ function Editor({
       if (form.allowHandover) {
         v._handover = String(handover);
         if (handover) {
-          if (!estimatedLossKg || !estimatedLossKg.isInteger())
-            throw Error("Укажите потери целым неотрицательным числом кг");
-          v.lossKg = estimatedLossKg.toFixed(0);
+          if (!estimatedLossKg || estimatedLossKg.decimalPlaces() > 3)
+            throw Error("Укажите неотрицательные потери с точностью до 0,001 кг");
+          v.lossKg = estimatedLossKg.toFixed();
         }
       }
       if (handover && !v.productQuantityKg?.trim()) v.productQuantityKg = "0";
@@ -493,8 +499,8 @@ function Editor({
           const n = new Decimal(v[f.key].replace(",", ".")).times(
             weightUnit === "t" ? 1000 : 1,
           );
-          if (!n.isFinite() || n.lt(0) || n.decimalPlaces() > (f.fractionalWeight ? 3 : 0))
-            throw Error(f.fractionalWeight ? "Укажите вес с точностью до 0,001 кг" : "Вес должен соответствовать целому числу килограммов");
+          if (!n.isFinite() || n.lt(0) || n.decimalPlaces() > 3)
+            throw Error("Укажите вес с точностью до 0,001 кг");
           v[f.key] = n.toFixed();
         } else if (f.number) v[f.key] = v[f.key]?.replace(",", ".");
       }
@@ -503,11 +509,11 @@ function Editor({
           const raw = values[`waste_${id}`]?.trim().replace(",", ".");
           if (!raw) return [];
           const kg = new Decimal(raw);
-          if (!kg.isFinite() || !kg.isInteger() || kg.lt(0))
+          if (!kg.isFinite() || kg.decimalPlaces() > 3 || kg.lt(0))
             throw Error(
-              `Вес отходов «${name}» должен быть целым неотрицательным числом кг`,
+              `Вес отходов «${name}» должен быть неотрицательным, с точностью до 0,001 кг`,
             );
-          return kg.isZero() ? [] : [{ itemId: id, quantityKg: kg.toFixed(0) }];
+          return kg.isZero() ? [] : [{ itemId: id, quantityKg: kg.toFixed() }];
         });
         if (!handover && !waste.length)
           throw Error("Укажите вес хотя бы одного вида отходов");
@@ -583,7 +589,7 @@ function Editor({
                       <Text
                         style={{ color: weightUnit === u ? c.blue : c.muted }}
                       >
-                        {u === "kg" ? (form.repeat?.fields.some(field => field.fractionalWeight) ? "Килограммы" : "Целые кг") : "Тонны"}
+                        {u === "kg" ? "Килограммы" : "Тонны"}
                       </Text>
                     </Pressable>
                   ))}
@@ -613,7 +619,12 @@ function Editor({
                   {f.stockAvailableKg !== undefined && <Text accessibilityLiveRegion="polite" style={[s.muted, {marginBottom:8}, loadingRemaining?.lt(0) && s.error]}>
                     {loadingRemaining?.lt(0) ? `Не хватает на складе: ${fmt(loadingRemaining.abs())} кг` : `На складе после загрузки: ${loadingRemaining ? fmt(loadingRemaining) : "—"} кг`}
                   </Text>}
-                  {f.options && f.dropdown ? (
+                  {f.toggle ? (
+                    <Pressable accessibilityRole="switch" accessibilityState={{ checked: values[f.key] === "true", disabled: busy }} disabled={busy} onPress={() => setValues(previous => ({ ...previous, [f.key]: previous[f.key] === "true" ? "false" : "true" }))} style={[s.chip, values[f.key] === "true" && s.chipOn, { flexDirection: "row", alignItems: "center", gap: 10 }]}>
+                      <Ionicons name={values[f.key] === "true" ? "checkbox" : "square-outline"} size={24} color={c.blue} />
+                      <Text style={s.text}>{values[f.key] === "true" ? "Показывать" : "Не показывать"}</Text>
+                    </Pressable>
+                  ) : f.options && f.dropdown ? (
                     <MaterialDropdown creatable={f.creatable} options={f.options} value={values[f.key] ?? ""} label={f.label} disabled={busy} onChange={(value) => setValues((previous) => ({ ...previous, [f.key]: value }))} />
                   ) : f.options ? (
                     <View style={s.options}>
@@ -786,7 +797,7 @@ function Editor({
                       <TextInput
                         accessibilityLabel="Безвозвратные потери, кг"
                         style={s.input}
-                        keyboardType="number-pad"
+                        keyboardType="decimal-pad"
                         placeholder="0"
                         value={values.lossKg ?? ""}
                         editable={!busy}
@@ -835,7 +846,7 @@ function Editor({
                         <TextInput
                           accessibilityLabel={`Вес отходов ${name}, кг`}
                           editable={!busy}
-                          keyboardType="number-pad"
+                          keyboardType="decimal-pad"
                           style={[
                             s.input,
                             {
@@ -1191,10 +1202,12 @@ const itemName = (r: any) =>
 export function Workspace({
   section,
   refreshKey = 0,
+  disabled = false,
   onChanged,
 }: {
   section: "production" | "inventory" | "sales" | "management";
   refreshKey?: number;
+  disabled?: boolean;
   onChanged: () => void;
 }) {
   const [data, setData] = useState<Record<string, any[]>>({});
@@ -1205,6 +1218,8 @@ export function Workspace({
   const [form, setForm] = useState<Form | null>(null);
   const [search, setSearch] = useState("");
   const [view, setView] = useState("");
+  const [completedPeriodActive, setCompletedPeriodActive] = useState(false);
+  const [completedBatchId, setCompletedBatchId] = useState<string | null>(null);
   const [batchFilter, setBatchFilter] = useState<"IN_PROGRESS" | "COMPLETED">(
     "IN_PROGRESS",
   );
@@ -1230,7 +1245,7 @@ export function Workspace({
     try {
       const routes =
         section === "production"
-          ? ["items", "equipment", "batches", "stock", "locations", "shifts"]
+          ? ["items", "equipment", "batches", "stock", "locations"]
           : section === "sales"
             ? ["items", "customers", "contracts", "shipments", "stock"]
             : section === "inventory"
@@ -1414,8 +1429,124 @@ export function Workspace({
       quantity: (previous?.quantity ?? new Decimal(0)).plus(available),
     });
   }
+  const saleWastes = new Map<string, { name: string; quantity: Decimal }>();
+  for (const row of rows("stock")) {
+    if (row.lot.item.kind !== "WASTE" || !row.lot.item.isActive || row.lot.isCarryover || row.location.kind !== "STORAGE") continue;
+    const available = new Decimal(row.onHandKg).minus(row.reservedKg);
+    if (available.lte(0)) continue;
+    const previous = saleWastes.get(row.lot.itemId);
+    saleWastes.set(row.lot.itemId, { name: row.lot.item.name, quantity: (previous?.quantity ?? new Decimal(0)).plus(available) });
+  }
+  const openDirectSale = (kind: "PRODUCT" | "WASTE") => {
+    const stock = kind === "WASTE" ? saleWastes : saleProducts;
+    setForm({
+      title: kind === "WASTE" ? "Продажа отходов" : "Продажа продукции",
+      subtitle: kind === "WASTE" ? "Доступные отходы на складах, за вычетом резервов." : undefined,
+      saleStock: Object.fromEntries(Array.from(stock, ([id, row]) => [id, row.quantity.toString()])),
+      fields: [
+        { key: "customerName", label: "Кому продаём · имя / название" },
+        { ...opt("itemId", kind === "WASTE" ? "Вид отходов" : "Готовая продукция", Array.from(stock, ([id, row]) => ({ id, name: `${row.name} · доступно ${fmt(row.quantity)} кг` }))), dropdown: true },
+        { key: "quantityKg", label: "Количество, кг", number: true },
+        { ...currencies, value: kind === "WASTE" ? "UZS" : "USD" },
+        { key: "unitPricePerKg", label: "Цена за 1 кг", number: true },
+      ],
+      submit: (v, send) => send("/sales", { customerName: v.customerName.trim(), itemId: v.itemId, kind, quantityKg: v.quantityKg, unitPricePerKg: v.unitPricePerKg, currency: v.currency }),
+    });
+  };
+  const completedBatch = rows("batches").find(batch => batch.id === completedBatchId && batch.status === "COMPLETED");
+  const openReceipt = () => setForm({
+    title: "Приход сырья",
+    allowDraft: true,
+    fields: [
+      { key: "supplierName", label: "Основной поставщик", required: false, dropdown: true, creatable: true, options: [...new Set([...rows("suppliers").map(x => x.name), ...rows("purchase-lines").map(x => x.supplierName).filter(Boolean)])].map(name => ({ id: name, name })) },
+      { key: "deliveredBy", label: "Кто привёз", required: false, dropdown: true, creatable: true, options: [...new Set(rows("purchase-lines").map(x => x.deliveredBy).filter(Boolean))].map(name => ({id:name,name})) },
+      { ...currencies, value: "UZS", extra: true, extraStart: true },
+      { key: "notes", label: "Комментарий", required: false },
+    ],
+    repeat: {
+      label: "Добавить материал",
+      fields: [
+        {
+          ...opt(
+            "materialId",
+            "Материал",
+            options(rows("items").filter((i) => i.kind === "MATERIAL" && i.isActive)),
+          ),
+          dropdown: true,
+          creatable: true,
+        },
+        { ...weight("quantity", "Получено до возврата"), fractionalWeight: true },
+        {
+          key: "unitPricePerKg",
+          required: false,
+          label: "Цена за кг",
+          number: true,
+        },
+        { extra: true, extraStart: true, key: "returnedKg", label: "Возврат при приёмке, кг", number: true, required: false, value: "0" },
+        { extra: true, key: "discountPercent", label: "Дополнительная скидка, %", number: true, required: false, value: "0" },
+        {
+          key: "discountKg",
+          extra: true,
+          label: "Скидка, кг (вручную)",
+          number: true,
+          required: false,
+          value: "0",
+        },
+      ],
+    },
+    submit: (v, send) =>
+      send("/purchase-receipts", {
+        currency: v.currency,
+        deliveredBy: v.deliveredBy?.replace(/^new:/, "").trim() || undefined,
+        supplierName: v.supplierName?.replace(/^new:/, "").trim() || undefined,
+        notes: v.notes,
+        lines: formRows(v).map((l) => ({
+          ...l,
+          ...(l.materialId?.startsWith("new:") ? { materialId: undefined, materialName: l.materialId.slice(4) } : {}),
+          supplierName: v.supplierName?.replace(/^new:/, "").trim() || undefined,
+          unitPricePerKg: l.unitPricePerKg?.trim() || undefined,
+          returnedKg: new Decimal(l.returnedKg || "0").toFixed(),
+          discountPercent: new Decimal(l.discountPercent || "0").toFixed(),
+          discountKg: new Decimal(l.discountKg || "0").toFixed(),
+          unit: "kg",
+        })),
+      }),
+  });
   return (
     <View>
+      {section === "inventory" && (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Принять несколько материалов"
+          disabled={disabled || busy || !!error}
+          onPress={openReceipt}
+          style={({ pressed }) => [s.receiptAction, { opacity: disabled || busy || !!error ? 0.5 : pressed ? 0.85 : 1 }]}
+        >
+          <View style={s.receiptActionIcon}>
+            <Ionicons name="download-outline" size={24} color={c.white} />
+          </View>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={s.receiptActionTitle}>Принять несколько материалов</Text>
+            <Text style={s.receiptActionHint}>Один поставщик · один или несколько материалов</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={20} color={c.white} />
+        </Pressable>
+      )}
+      {section === "inventory" && <Btn secondary title="Принять отход" disabled={disabled || busy || !!error}
+        onPress={() => setForm({
+          title: "Приём отходов",
+          subtitle: "Выберите вид из справочника отходов. Остаток поступит на выбранный склад. Если нужного вида нет, добавьте его в «Ещё → Виды отходов».",
+          fields: [
+            { ...opt("itemId", "Вид отходов", options(rows("items").filter(item => item.kind === "WASTE" && item.isActive))), dropdown: true },
+            weight("quantityKg", "Вес отходов"),
+            { ...opt("locationId", "Склад", options(rows("locations").filter(location => location.kind === "STORAGE"))), dropdown: true, value: rows("locations").find(location => location.name === stockWarehouse && location.kind === "STORAGE")?.id },
+            { key: "unitPricePerKg", label: "Стоимость за кг (необязательно)", number: true, required: false },
+            { ...currencies, value: "UZS" },
+            { key: "notes", label: "Комментарий", required: false },
+          ],
+          allowDraft: true,
+          submit: (v, send) => send("/waste/receive", { ...v, unitPricePerKg: v.unitPricePerKg?.trim() || undefined }),
+        })} />}
       {section === "production" && (
         <>
           <View style={s.productionTabs}>
@@ -1429,7 +1560,7 @@ export function Workspace({
                 key={value}
                 accessibilityRole="tab"
                 accessibilityState={{ selected: batchFilter === value }}
-                onPress={() => setBatchFilter(value)}
+                onPress={() => { if (value !== batchFilter) { setBatchFilter(value); setCompletedPeriodActive(false); } }}
                 style={({ pressed }) => [
                   s.productionTab,
                   batchFilter === value && s.productionTabActive,
@@ -1485,6 +1616,7 @@ export function Workspace({
         )}
       {section === "production" && (
         <>
+          {!!actionError && <Text accessibilityRole="alert" style={s.error}>{actionError}</Text>}
           <Btn
             title="+  Начать плавку"
             disabled={busy || !!error}
@@ -1520,6 +1652,8 @@ export function Workspace({
               }
             />
           )}
+          {batchFilter === "COMPLETED" && <ProductionPeriodReport refreshKey={refreshKey} onActiveChange={setCompletedPeriodActive} />}
+          {!(batchFilter === "COMPLETED" && completedPeriodActive) && <>
           {!rows("batches").some((b) => (b.status === batchFilter || (batchFilter === "COMPLETED" && b.status === "RETURNED"))) && !busy && (
             <Empty
               text={
@@ -1541,7 +1675,11 @@ export function Workspace({
                 <Row label={b.shift.name} value={b.shift.businessDate} />
                 <Row label="Начало" value={date(b.startedAt)} />
                 {b.status === "COMPLETED" && <Row label="Завершение" value={date(b.completedAt)} />}
-                {b.status === "COMPLETED" ? <CompletedMeltDetails batch={b} /> : <>
+                {b.status === "COMPLETED" ? <>
+                  <Row label="Загружено" value={`${fmt(b.inputs.reduce((sum: Decimal, input: any) => sum.plus(input.quantityKg), new Decimal(0)))} кг`} />
+                  <Row label="Готовая продукция" value={`${fmt(b.outputs.filter((output: any) => output.lot.item.kind === "PRODUCT").reduce((sum: Decimal, output: any) => sum.plus(output.quantityKg), new Decimal(0)))} кг`} />
+                  <Btn secondary title="Результат плавки" onPress={() => setCompletedBatchId(b.id)} />
+                </> : <>
                 <Row
                   label="Стоимость сырья и остатка"
                   value={costText(b.totalCost)}
@@ -1617,7 +1755,7 @@ export function Workspace({
                                   `Недостаточно сырья «${r.name}»: доступно ${fmt(r.quantity)} кг`,
                                 );
                               return [
-                                { itemId, quantityKg: quantity.toFixed(0) },
+                                { itemId, quantityKg: quantity.toFixed() },
                               ];
                             });
                             if (!lines.length)
@@ -1627,6 +1765,37 @@ export function Workspace({
                         })
                       }
                     />
+                    {!!b.lastLoad && <Btn secondary title="Изменить последнюю загрузку" onPress={() => {
+                      const available = new Map<string, { itemId: string; name: string; quantity: Decimal; loaded: string }>();
+                      for (const row of loadingStock) {
+                        const itemId = row.id.split(":")[0];
+                        available.set(itemId, { itemId, name: row.name, quantity: new Decimal(row.quantity), loaded: "" });
+                      }
+                      for (const line of b.lastLoad.lines) {
+                        const previous = available.get(line.itemId);
+                        available.set(line.itemId, { itemId: line.itemId, name: line.name, quantity: (previous?.quantity ?? new Decimal(0)).plus(line.quantityKg), loaded: line.quantityKg });
+                      }
+                      const choices = [...available.values()];
+                      setForm({
+                        title: "Исправление последней загрузки",
+                        subtitle: `Загрузка от ${date(b.lastLoad.postedAt)}. Укажите полный правильный вес этой загрузки. Пустое поле или 0 — убрать материал. Предыдущие загрузки и остаток прошлой смены не изменятся.`,
+                        loadingSummary: true,
+                        fields: [
+                          ...choices.map(row => ({ ...weight(`edit_${row.itemId}`, row.name), value: row.loaded, stockAvailableKg: row.quantity.toString(), required: false })),
+                          { ...reason, label: "Причина исправления", editableComment: true },
+                        ],
+                        allowDraft: true,
+                        submit: (v, send) => {
+                          const lines = choices.flatMap(row => {
+                            const quantity = new Decimal(v[`edit_${row.itemId}`] || "0");
+                            if (quantity.isZero()) return [];
+                            if (quantity.gt(row.quantity)) throw Error(`Недостаточно сырья «${row.name}»: доступно ${fmt(row.quantity)} кг`);
+                            return [{ itemId: row.itemId, quantityKg: quantity.toFixed() }];
+                          });
+                          return send(`/batches/${b.id}/load/edit`, { loadId: b.lastLoad.id, reason: v.reason, lines });
+                        },
+                      });
+                    }} />}
                     <Btn
                       title="Завершить плавку"
                       onPress={() =>
@@ -1644,7 +1813,7 @@ export function Workspace({
                               (sum, r) => sum.plus(r.onHandKg),
                               new Decimal(0),
                             )
-                            .toFixed(0),
+                            .toFixed(),
                           fields: [
                             opt(
                               "productId",
@@ -1741,33 +1910,7 @@ export function Workspace({
                 </>}
               </Card>
             ))}
-          <Text style={s.section}>Смены</Text>
-          {!!actionError && (
-            <Text accessibilityRole="alert" style={s.error}>
-              {actionError}
-            </Text>
-          )}
-          {filtered("shifts").map((sh) => (
-            <Card key={sh.id}>
-              <Row label={sh.name} value={sh.businessDate} />
-              <Row label="Статус" value={status(sh.status)} />
-              <Btn
-                secondary
-                title={
-                  sh.status === "OPEN" ? "Закрыть смену" : "Открыть повторно"
-                }
-                onPress={() =>
-                  sh.status === "OPEN"
-                    ? simple("Закрыть смену?", `/shifts/${sh.id}/close`, {
-                        version: sh.version,
-                      })
-                    : setup("Повторное открытие", `/shifts/${sh.id}/reopen`, [
-                        { ...reason, editableComment: true },
-                      ])
-                }
-              />
-            </Card>
-          ))}
+          </>}
         </>
       )}
       {section === "inventory" && <>
@@ -1848,70 +1991,6 @@ export function Workspace({
           </View>
 
           {!visibleStock.some(row => row.location.name === stockWarehouse) && <Empty text="За выбранный период с этими фильтрами остатков нет." />}
-          <Btn
-            secondary
-            title="Принять несколько позиций"
-            onPress={() =>
-              setForm({
-                title: "Приход сырья",
-                allowDraft: true,
-                fields: [
-                  { key: "supplierName", label: "Основной поставщик", required: false, dropdown: true, creatable: true, options: [...new Set([...rows("suppliers").map(x => x.name), ...rows("purchase-lines").map(x => x.supplierName).filter(Boolean)])].map(name => ({ id: name, name })) },
-                  { key: "deliveredBy", label: "Кто привёз", required: false, dropdown: true, creatable: true, options: [...new Set(rows("purchase-lines").map(x => x.deliveredBy).filter(Boolean))].map(name => ({id:name,name})) },
-                  { ...currencies, value: "UZS", extra: true, extraStart: true },
-                  { key: "notes", label: "Комментарий", required: false },
-                ],
-                repeat: {
-                  label: "Добавить материал",
-                  fields: [
-                    {
-                      ...opt(
-                        "materialId",
-                        "Материал",
-                        options(rows("items").filter((i) => i.kind === "MATERIAL" && i.isActive)),
-                      ),
-                      dropdown: true,
-                      creatable: true,
-                    },
-                    { ...weight("quantity", "Получено до возврата"), fractionalWeight: true },
-                    {
-                      key: "unitPricePerKg",
-                      required: false,
-                      label: "Цена за кг",
-                      number: true,
-                    },
-                    { extra: true, extraStart: true, key: "returnedKg", label: "Возврат при приёмке, кг", number: true, required: false, value: "0" },
-                    { extra: true, key: "discountPercent", label: "Дополнительная скидка, %", number: true, required: false, value: "0" },
-                    {
-                      key: "discountKg",
-                      extra: true,
-                      label: "Скидка, кг (вручную)",
-                      number: true,
-                      required: false,
-                      value: "0",
-                    },
-                  ],
-                },
-                submit: (v, send) =>
-                  send("/purchase-receipts", {
-                    currency: v.currency,
-                    deliveredBy: v.deliveredBy?.replace(/^new:/, "").trim() || undefined,
-                    supplierName: v.supplierName?.replace(/^new:/, "").trim() || undefined,
-                    notes: v.notes,
-                    lines: formRows(v).map((l) => ({
-                      ...l,
-                      ...(l.materialId?.startsWith("new:") ? { materialId: undefined, materialName: l.materialId.slice(4) } : {}),
-                      supplierName: v.supplierName?.replace(/^new:/, "").trim() || undefined,
-                      unitPricePerKg: l.unitPricePerKg?.trim() || undefined,
-                      returnedKg: new Decimal(l.returnedKg || "0").toFixed(),
-                      discountPercent: new Decimal(l.discountPercent || "0").toFixed(),
-                      discountKg: new Decimal(l.discountKg || "0").toFixed(),
-                      unit: "kg",
-                    })),
-                  }),
-              })
-            }
-          />
           <View style={s.chips}>
             {(["kg", "t"] as const).map((u) => (
               <Pressable
@@ -2387,56 +2466,10 @@ export function Workspace({
       {section === "sales" && salesView === "report" && <SalesSummary />}
       {section === "sales" && salesView === "sale" && (
         <>
-          <Btn
-            title="Продать продукцию"
-            disabled={busy || !!error}
-            onPress={() =>
-              setForm({
-                title: "Продажа продукции",
-                saleStock: Object.fromEntries(
-                  Array.from(saleProducts, ([id, p]) => [
-                    id,
-                    p.quantity.toString(),
-                  ]),
-                ),
-                fields: [
-                  {
-                    key: "customerName",
-                    label: "Кому продаём · имя / название",
-                  },
-                  opt(
-                    "itemId",
-                    "Готовая продукция",
-                    Array.from(saleProducts, ([id, p]) => ({
-                      id,
-                      name: `${p.name} · доступно ${fmt(p.quantity)} кг`,
-                    })),
-                  ),
-                  { key: "quantityKg", label: "Количество, кг", number: true },
-                  {
-                    ...opt("currency", "Валюта", [
-                      { id: "USD", name: "Доллары США · USD" },
-                      { id: "UZS", name: "Узбекские сумы · UZS" },
-                    ]),
-                    value: "USD",
-                  },
-                  {
-                    key: "unitPricePerKg",
-                    label: "Цена за 1 кг",
-                    number: true,
-                  },
-                ],
-                submit: (v, send) =>
-                  send("/sales", {
-                    customerName: v.customerName.trim(),
-                    itemId: v.itemId,
-                    quantityKg: v.quantityKg,
-                    unitPricePerKg: v.unitPricePerKg,
-                    currency: v.currency,
-                  }),
-              })
-            }
-          />
+          <View style={{ flexDirection: "row", gap: 10, alignItems: "stretch" }}>
+            <View style={{ flex: 1, minWidth: 0 }}><Btn title="Продать продукцию" disabled={busy || !!error} onPress={() => openDirectSale("PRODUCT")} /></View>
+            <View style={{ flex: 1, minWidth: 0 }}><Btn secondary title="Продать отходы" disabled={busy || !!error} onPress={() => openDirectSale("WASTE")} /></View>
+          </View>
           <View style={s.chips}>
             <Btn
               title="+ Договор"
@@ -2646,63 +2679,13 @@ export function Workspace({
             </Card>
           ))}
           {!rows("contracts").length && !busy && (
-            <Empty text="Для продажи нажмите «Продать продукцию». Договор можно оформить отдельно." />
+            <Empty text="Для продажи выберите «Продать продукцию» или «Продать отходы». Договор можно оформить отдельно." />
           )}
-          <Btn
-            secondary
-            title="Продать отходы"
-            onPress={() =>
-              setup(
-                "Продажа отходов",
-                "/shipments",
-                [
-                  opt("customerId", "Клиент", options(rows("customers"))),
-                  opt(
-                    "source",
-                    "Партия отходов",
-                    rows("stock")
-                      .filter(
-                        (r) =>
-                          stockKind(r) === "WASTE" &&
-                          r.location.kind === "STORAGE",
-                      )
-                      .map((r) => ({
-                        id: `${r.lotId}:${r.locationId}:${r.lot.itemId}`,
-                        name: itemName(r),
-                      })),
-                  ),
-                  weight(),
-                  currencies,
-                  { key: "unitPricePerKg", label: "Цена за кг", number: true },
-                  { key: "vehicleNumber", label: "Госномер машины" },
-                ],
-                (v) => ({
-                  customerId: v.customerId,
-                  currency: v.currency,
-                  kind: "WASTE",
-                  vehicleNumber: v.vehicleNumber,
-                  lines: [
-                    {
-                      itemId: v.source.split(":")[2],
-                      unitPricePerKg: v.unitPricePerKg,
-                      allocations: [
-                        {
-                          lotId: v.source.split(":")[0],
-                          locationId: v.source.split(":")[1],
-                          quantityKg: v.quantityKg,
-                        },
-                      ],
-                    },
-                  ],
-                }),
-              )
-            }
-          />
           <Text style={s.section}>Отгрузки</Text>
           {filtered("shipments").map((sh) => (
             <Card key={sh.id}>
               <Text style={s.section}>
-                {sh.vehicleNumber ?? "Продажа продукции"}
+                {sh.vehicleNumber ?? (sh.kind === "WASTE" ? "Продажа отходов" : "Продажа продукции")}
               </Text>
               <Text style={s.muted}>
                 {sh.customer.name} · {date(sh.document.postedAt)}
@@ -2942,6 +2925,7 @@ export function Workspace({
                                   ),
                                   value: r.wasteDisposition ?? "",
                                 },
+                                { key: "showOnDashboard", label: "Показывать на главной", toggle: true, value: String(!!r.showOnDashboard), required: false },
                               ]
                             : []),
                           ...(["suppliers", "customers"].includes(kind)
@@ -2964,6 +2948,7 @@ export function Workspace({
                         (vv) => ({
                           ...vv,
                           version: r.version,
+                          ...(kind === "items" && r.kind === "WASTE" ? { showOnDashboard: vv.showOnDashboard === "true" } : {}),
                           ...(kind === "materials" ? { category: vv.category === "NONE" ? "" : vv.category } : {}),
                           isActive: vv.isActive === "true",
                         }),
@@ -3114,7 +3099,7 @@ export function Workspace({
         </>
       )}
       {Object.entries(cursors)
-        .filter(([, v]) => v)
+        .filter(([route, v]) => v && !(section === "production" && batchFilter === "COMPLETED" && completedPeriodActive && ["batches", "shifts"].includes(route)))
         .map(([route, cursor]) => (
           <Btn
             key={route}
@@ -3133,6 +3118,28 @@ export function Workspace({
             }}
           />
         ))}
+      {!!completedBatch && (
+        <Modal visible animationType="slide" onRequestClose={() => setCompletedBatchId(null)}>
+          <SafeAreaView style={s.modal}>
+            <View style={s.modalHead}>
+              <Text style={[s.section, { flex: 1, marginBottom: 0 }]}>Результат плавки</Text>
+              <Pressable accessibilityRole="button" accessibilityLabel="Закрыть результат плавки" onPress={() => setCompletedBatchId(null)} style={s.modalClose}>
+                <Ionicons name="close" size={22} color={c.ink} />
+              </Pressable>
+            </View>
+            <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 32 }}>
+              <Card>
+                <Text style={[s.section, { marginTop: 0 }]}>{completedBatch.equipment.name}</Text>
+                <Text style={s.muted}>{completedBatch.number}</Text>
+                <Row label={completedBatch.shift.name} value={completedBatch.shift.businessDate} />
+                <Row label="Начало" value={date(completedBatch.startedAt)} />
+                <Row label="Завершение" value={date(completedBatch.completedAt)} />
+                <CompletedMeltDetails batch={completedBatch} />
+              </Card>
+            </ScrollView>
+          </SafeAreaView>
+        </Modal>
+      )}
       {form && (
         <Editor
           failed={onChanged}
@@ -3150,12 +3157,14 @@ export function Workspace({
   );
 }
 type SalesSummaryData = {
+  sales?: { id: string; customerName: string; occurredAt: string; currency: string; quantityKg: string; amount: string; lines: { id: string; itemId: string; name: string; quantityKg: string; unitPricePerKg: string; amount: string }[] }[];
   rows: {
     itemId: string;
     name: string;
     currency: string;
     quantityKg: string;
     amount: string;
+    averageUnitPrice?: string | null;
   }[];
   totalKg: string;
   totals: { currency: string; amount: string }[];
@@ -3348,21 +3357,50 @@ function SalesSummary() {
                 </View>
               ))}
             </View>
+            {!!data.rows.length && <View style={{ gap: 10, marginTop: 6 }}>
+              <Text style={[s.text, { fontSize: 13, fontWeight: "700" }]}>Продукция и отходы</Text>
+              {[...new Map(data.rows.map(row => [row.itemId, row.name])).entries()].map(([itemId, name]) => {
+                const sales = data.rows.filter(row => row.itemId === itemId);
+                const weight = sales.reduce((sum, row) => sum.plus(row.quantityKg), new Decimal(0));
+                return <View key={itemId} style={{ backgroundColor: c.white, borderRadius: 12, padding: 12, gap: 5 }}>
+                  <Text style={[s.text, { fontWeight: "700", fontSize: 15 }]}>{name}</Text>
+                  <Row label="Всего продано" value={`${fmt(weight)} кг`} />
+                  {sales.map(row => {
+                    const average = row.averageUnitPrice ?? (new Decimal(row.quantityKg).gt(0) ? new Decimal(row.amount).div(row.quantityKg).toString() : null);
+                    return <View key={row.currency} style={sales.length > 1 ? { borderTopWidth: 1, borderColor: c.line, paddingTop: 7, marginTop: 5 } : undefined}>
+                      {sales.length > 1 && <Row label={`Продано в ${row.currency}`} value={`${fmt(row.quantityKg)} кг`} />}
+                      <Row label="Средняя цена за кг" value={average === null ? "—" : `${fmt(new Decimal(average).toDecimalPlaces(2))} ${row.currency}`} />
+                      <Row label="Итого по продукции" value={`${fmt(row.amount)} ${row.currency}`} />
+                    </View>;
+                  })}
+                </View>;
+              })}
+              <Text style={[s.muted, { fontSize: 11, lineHeight: 16 }]}>Средняя цена = сумма продаж ÷ проданный вес за выбранный период. Разные валюты считаются отдельно.</Text>
+            </View>}
           </View>
-          {!data.rows.length ? (
-            <Empty text="За этот период продаж нет." />
-          ) : (
-            data.rows.map((row) => (
-              <Card key={`${row.itemId}:${row.currency}`}>
-                <Text style={s.section}>{row.name}</Text>
-                <Row label="Продано" value={`${fmt(row.quantityKg)} кг`} />
-                <Row
-                  label="Сумма продаж"
-                  value={`${fmt(row.amount)} ${row.currency}`}
-                />
-              </Card>
-            ))
-          )}
+          {!!data.sales?.length && <>
+            <Text style={s.section}>Продажи за период</Text>
+            <Text style={[s.muted, { marginBottom: 12 }]}>Дата и время продажи · Ташкент</Text>
+            {data.sales.map(sale => <Card key={sale.id}>
+              <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 10, marginBottom: 10 }}>
+                <View style={{ width: 38, height: 38, borderRadius: 12, backgroundColor: c.softBlue, alignItems: "center", justifyContent: "center" }}><Ionicons name="person-outline" size={19} color={c.blue} /></View>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={[s.text, { fontWeight: "700", fontSize: 16 }]}>{sale.customerName}</Text>
+                  <Text style={[s.muted, { marginTop: 4 }]}>{date(sale.occurredAt)}</Text>
+                </View>
+              </View>
+              {sale.lines.map(line => <View key={line.id} style={{ borderTopWidth: 1, borderColor: c.line, paddingTop: 8, marginTop: 5 }}>
+                <Text style={[s.text, { fontWeight: "600", marginBottom: 5 }]}>{line.name}</Text>
+                <Row label="Продано" value={`${fmt(line.quantityKg)} кг`} />
+                <Row label="Цена за кг" value={`${fmt(line.unitPricePerKg)} ${sale.currency}`} />
+                <Row label="Сумма" value={`${fmt(line.amount)} ${sale.currency}`} />
+              </View>)}
+              <View style={{ borderTopWidth: 1, borderColor: c.line, paddingTop: 8, marginTop: 8 }}>
+                <Row label="Итого по продаже" value={`${fmt(sale.amount)} ${sale.currency}`} />
+              </View>
+            </Card>)}
+          </>}
+          {!data.rows.length && <Empty text="За этот период продаж нет." />}
         </>
       )}
     </View>
@@ -4060,6 +4098,10 @@ export function LeadAgent() {
 }
 
 const s = StyleSheet.create({
+  receiptAction: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: c.blue, borderRadius: 18, padding: 16, marginBottom: 16, minHeight: 80 },
+  receiptActionIcon: { width: 44, height: 44, borderRadius: 14, backgroundColor: "rgba(255,255,255,0.16)", alignItems: "center", justifyContent: "center" },
+  receiptActionTitle: { color: c.white, fontSize: 16, lineHeight: 21, fontWeight: "700" },
+  receiptActionHint: { color: "rgba(255,255,255,0.85)", fontSize: 12, lineHeight: 17, marginTop: 4 },
   leadSetupCard: { padding: 16 },
   leadSetupHeader: { flexDirection: "row", alignItems: "center", gap: 10, width: "100%" },
   leadSetupIcon: {
@@ -4470,7 +4512,7 @@ function CatalogGroup({ title, items, waste = false, disabled, showEmpty, onAdd,
         <Text style={[catalogStyles.name, !item.isActive && { color: c.muted }]}>{item.name}</Text>
         {(waste || !item.isActive) && <View style={catalogStyles.meta}>
           {waste && <View style={[catalogStyles.dot, { backgroundColor: item.wasteDisposition === "STORAGE" ? c.green : item.wasteDisposition === "SALE" ? c.orange : c.muted }]} />}
-          <Text style={catalogStyles.subtitle}>{[waste ? wasteDestination(item.wasteDisposition) : "", !item.isActive ? "Отключено" : ""].filter(Boolean).join(" · ")}</Text>
+          <Text style={catalogStyles.subtitle}>{[waste ? wasteDestination(item.wasteDisposition) : "", waste && item.showOnDashboard ? "На главной" : "", !item.isActive ? "Отключено" : ""].filter(Boolean).join(" · ")}</Text>
         </View>}
       </View>
       {!disabled && <View style={catalogStyles.edit}><Ionicons name="create-outline" size={18} color={c.blue} /></View>}
@@ -4529,19 +4571,19 @@ export function CatalogActions({
       fields: [
         { key: "name", label: "Название" },
         ...(kind === "WASTE"
-          ? [opt("wasteDisposition", "Что делать с отходом", wasteChoices)]
+          ? [opt("wasteDisposition", "Что делать с отходом", wasteChoices), { key: "showOnDashboard", label: "Показывать на главной", toggle: true, value: "false", required: false }]
           : []),
       ],
       allowDraft: true,
-      submit: (v, send) => send("/items", { ...v, kind }),
+      submit: (v, send) => send("/items", { ...v, kind, ...(kind === "WASTE" ? { showOnDashboard: v.showOnDashboard === "true" } : {}) }),
     });
   const edit = (item: any) => setForm({
     title: item.kind === "PRODUCT" ? "Изменить продукцию" : "Изменить вид отходов",
     fields: [
       { key: "name", label: "Название", value: item.name },
-      ...(item.kind === "WASTE" ? [{ ...opt("wasteDisposition", "Что делать с отходом", wasteChoices), value: item.wasteDisposition ?? "" }] : []),
+      ...(item.kind === "WASTE" ? [{ ...opt("wasteDisposition", "Что делать с отходом", wasteChoices), value: item.wasteDisposition ?? "" }, { key: "showOnDashboard", label: "Показывать на главной", toggle: true, value: String(!!item.showOnDashboard), required: false }] : []),
     ],
-    submit: (v, send) => send(`/catalog/items/${item.id}/edit`, { name: v.name, ...(item.kind === "WASTE" ? { wasteDisposition: v.wasteDisposition } : {}), version: item.version, isActive: item.isActive }),
+    submit: (v, send) => send(`/catalog/items/${item.id}/edit`, { name: v.name, ...(item.kind === "WASTE" ? { wasteDisposition: v.wasteDisposition, showOnDashboard: v.showOnDashboard === "true" } : {}), version: item.version, isActive: item.isActive }),
   });
   return (
     <View style={{ gap: 14 }}>

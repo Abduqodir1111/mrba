@@ -1,0 +1,1 @@
+ALTER TABLE "Item" ADD COLUMN "showOnDashboard" BOOLEAN NOT NULL DEFAULT false;

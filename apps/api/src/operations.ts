@@ -383,6 +383,8 @@ export class OperationsController {
           const existing = productGroups.get(row.id);
           productGroups.set(row.id, { id: row.id, name: row.name, quantityKg: new Prisma.Decimal(existing?.quantityKg ?? 0).plus(row.quantityKg).toString() });
         }
+        const featuredWaste = await tx.item.findMany({ where: { kind: "WASTE", isActive: true, showOnDashboard: true }, orderBy: [{ name: "asc" }, { id: "asc" }] });
+        const stockByFeaturedWaste = featuredWaste.map(item => ({ id: item.id, name: item.name, quantityKg: stockRows.filter(row => row.id === item.id).reduce((sum, row) => sum.plus(row.quantityKg), new Prisma.Decimal(0)).toString() }));
         const stockByProduct = [...productGroups.values()];
         const lastClose = await tx.monthClose.findFirst({ orderBy: { number: "desc" }, select: { id: true, to: true, stockReset: true } });
         const openingPending=!!lastClose?.stockReset && !await tx.commandReceipt.count({where:{type:"MONTH_OPENING",reportingPeriodId:lastClose!.id}});
@@ -399,6 +401,7 @@ export class OperationsController {
           stockKg: stockByMaterial.reduce((sum, row) => sum.plus(row.quantityKg), new Prisma.Decimal(0)).toString(),
           productStockKg: stockByProduct.reduce((sum, row) => sum.plus(row.quantityKg), new Prisma.Decimal(0)).toString(),
           stockByProduct,
+          stockByFeaturedWaste,
           stockByMaterial,
           rawStockGroups: ["KIZIL", "SARIK"].map(category => ({
             category,

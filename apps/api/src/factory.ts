@@ -31,7 +31,7 @@ import {
   Min,
   ValidateNested,
 } from "class-validator";
-import { Type } from "class-transformer";
+import { Type, Transform } from "class-transformer";
 import { Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { currentShift, toKg } from "@mrba/domain";
@@ -41,12 +41,12 @@ import { OperationsService } from "./operations";
 type Tx = Prisma.TransactionClient;
 export const decimal = (v: string | Prisma.Decimal) => new Prisma.Decimal(v);
 export function kg(v: string, zero = false) {
-  if (zero && /^0+$/.test(v)) return "0";
+  if (zero && /^0+(?:[.,]0+)?$/.test(v.trim())) return "0";
   try {
     return toKg(v, "kg");
   } catch {
     throw new ConflictException(
-      "Введите положительный вес в целых килограммах",
+      "Введите положительный вес с точностью до 0,001 кг",
     );
   }
 }
@@ -103,8 +103,18 @@ class NameDto {
   @IsString() @Matches(/\S/) @MaxLength(150) name!: string;
 }
 class ItemDto extends NameDto {
+  @IsOptional() @IsBoolean() showOnDashboard?: boolean;
   @IsOptional() @IsIn(["STORAGE", "SALE"]) wasteDisposition?: string;
   @IsIn(["PRODUCT", "WASTE"]) kind!: string;
+}
+class WasteIntakeDto {
+  @IsUUID() itemId!: string;
+  @IsUUID() locationId!: string;
+  @Transform(({ value }) => typeof value === "string" ? value.trim().replace(",", ".") : value)
+  @IsString() @Matches(/^\d{1,12}(?:\.\d{1,3})?$/) quantityKg!: string;
+  @IsOptional() @IsString() @Matches(/^\d{1,12}(?:\.\d{1,6})?$/) unitPricePerKg?: string;
+  @IsIn(["UZS", "USD"]) currency!: "UZS" | "USD";
+  @IsOptional() @IsString() @MaxLength(1000) notes?: string;
 }
 class EquipmentDto extends NameDto {
   @IsIn(["BRASS", "COPPER"]) direction!: string;
@@ -118,19 +128,19 @@ class VersionDto {
 class LotDto {
   @IsUUID() lotId!: string;
   @IsUUID() locationId!: string;
-  @IsString() @Matches(/^\d{1,12}$/) quantityKg!: string;
+  @Transform(({ value }) => typeof value === "string" ? value.trim().replace(",", ".") : value) @IsString() @Matches(/^\d{1,12}(?:\.\d{1,3})?$/) quantityKg!: string;
 }
 class TransferDto {
   @IsOptional() @IsUUID() lotId?: string;
   @IsOptional() @IsUUID() itemId?: string;
   @IsUUID() locationId!: string;
-  @IsString() @Matches(/^\d{1,12}$/) quantityKg!: string;
+  @Transform(({ value }) => typeof value === "string" ? value.trim().replace(",", ".") : value) @IsString() @Matches(/^\d{1,12}(?:\.\d{1,3})?$/) quantityKg!: string;
   @IsUUID() destinationId!: string;
   @IsString() @Matches(/\S/) @MaxLength(1000) reason!: string;
 }
 class LoadLineDto {
   @IsUUID() itemId!: string;
-  @IsString() @Matches(/^\d{1,12}$/) quantityKg!: string;
+  @Transform(({ value }) => typeof value === "string" ? value.trim().replace(",", ".") : value) @IsString() @Matches(/^\d{1,12}(?:\.\d{1,3})?$/) quantityKg!: string;
 }
 class LoadBatchDto {
   @IsArray()
@@ -140,13 +150,140 @@ class LoadBatchDto {
   @Type(() => LoadLineDto)
   lines!: LoadLineDto[];
 }
+class EditLoadDto {
+  @IsUUID() loadId!: string;
+  @IsString() @Matches(/\S/) @MaxLength(1000) reason!: string;
+  @IsArray() @ArrayMinSize(0) @ArrayMaxSize(100)
+  @ValidateNested({ each: true }) @Type(() => LoadLineDto) lines!: LoadLineDto[];
+}
+async function applyBatchLoad(tx: Tx, batchId: string, id: string, dto: { lines: LoadLineDto[] }, edit?: EditLoadDto) {
+  await lock(tx, `batch:${batchId}`);
+  const batch = await tx.productionBatch.findUniqueOrThrow({
+    where: { id: batchId },
+  });
+  ensure(batch.status === "IN_PROGRESS", "Плавка уже закрыта");
+  const destination = await tx.stockLocation.findUniqueOrThrow({
+    where: { id: batch.wipLocationId },
+    include: { warehouse: true },
+  });
+  const source = await tx.stockLocation.findFirstOrThrow({
+    where: {
+      name: "Основной склад",
+      kind: "STORAGE",
+      warehouse: { siteId: destination.warehouse.siteId },
+    },
+  });
+  ensure(
+    new Set(dto.lines.map((l) => l.itemId)).size === dto.lines.length,
+    "Сырьё не должно повторяться",
+  );
+  const previous = edit ? await latestBatchLoad(tx, batchId) : null;
+  if (edit) ensure(previous?.id === edit.loadId, "Последняя загрузка уже изменилась. Обновите плавку");
+  const undo = previous?.allocations ?? [];
+  const oldLotIds = undo.map(m => m.lotId);
+  const lots = await tx.stockLot.findMany({
+    where: { OR: [
+      { itemId: { in: dto.lines.map((l) => l.itemId) }, balances: { some: { locationId: source.id, onHandKg: { gt: 0 } } } },
+      { id: { in: oldLotIds } },
+    ] },
+    include: { item: true },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+  });
+  await balancesLock(
+    tx,
+    lots.flatMap((lot) => [
+      { lotId: lot.id, locationId: source.id },
+      { lotId: lot.id, locationId: destination.id },
+    ]),
+  );
+  await tx.businessDocument.create({
+    data: {
+      id,
+      commandId: id,
+      type: edit ? "PRODUCTION_LOAD_EDIT" : "PRODUCTION_ISSUE",
+      batchId,
+      postedAt: new Date(),
+      reversesId: previous?.id,
+      reason: edit?.reason ?? "Загрузка сырья в плавку",
+    },
+  });
+  const changes = new Map<string, { lotId: string; locationId: string; quantity: Prisma.Decimal; type: string }>();
+  const add = (lotId: string, locationId: string, quantity: Prisma.Decimal, type: string) => {
+    const key = `${lotId}:${locationId}`;
+    const old = changes.get(key);
+    changes.set(key, { lotId, locationId, quantity: (old?.quantity ?? decimal("0")).plus(quantity), type });
+  };
+  for (const m of undo) {
+    ensure(m.sourceId === source.id && m.destinationId === destination.id, "Эту загрузку нельзя исправить автоматически");
+    const current = await tx.inventoryBalance.findUniqueOrThrow({ where: { lotId_locationId: { lotId: m.lotId, locationId: destination.id } } });
+    ensure(current.onHandKg.minus(current.reservedKg).gte(m.quantityKg), "Последняя загрузка уже использована или зарезервирована");
+    add(m.lotId, source.id, decimal(m.quantityKg), "PRODUCTION_LOAD_EDIT");
+    add(m.lotId, destination.id, decimal(m.quantityKg).negated(), "PRODUCTION_LOAD_EDIT");
+  }
+  const allocations: LoadAllocation[] = [];
+  let total = decimal("0");
+  for (const line of dto.lines) {
+    const item = await tx.item.findUniqueOrThrow({
+      where: { id: line.itemId },
+    });
+    ensure(
+      item.isActive && (["MATERIAL", "WASTE"].includes(item.kind) || lots.some(l => l.itemId === item.id && l.stockKind === "MATERIAL")),
+      "Выберите доступное сырьё или отходы",
+    );
+    let remaining = decimal(kg(line.quantityKg));
+    total = total.plus(remaining);
+    for (const lot of lots.filter((l) => l.itemId === item.id && (l.stockKind ?? l.item.kind) !== "PRODUCT")) {
+      const balance = await tx.inventoryBalance.findUniqueOrThrow({
+        where: {
+          lotId_locationId: { lotId: lot.id, locationId: source.id },
+        },
+      });
+      const take = Prisma.Decimal.min(
+        balance.onHandKg.minus(balance.reservedKg).plus(changes.get(`${lot.id}:${source.id}`)?.quantity ?? 0),
+        remaining,
+      );
+      if (take.lte(0)) continue;
+      add(lot.id, source.id, take.negated(), edit ? "PRODUCTION_LOAD_EDIT" : item.kind === "WASTE" ? "WASTE_REUSE" : "PRODUCTION_ISSUE");
+      add(lot.id, destination.id, take, edit ? "PRODUCTION_LOAD_EDIT" : "TRANSFER");
+      allocations.push({ lotId: lot.id, itemId: item.id, name: item.name, quantityKg: take.toString(), sourceId: source.id, destinationId: destination.id });
+      remaining = remaining.minus(take);
+      if (remaining.isZero()) break;
+    }
+    ensure(
+      remaining.isZero(),
+      `Недостаточно сырья «${item.name}»: не хватает ${remaining} кг`,
+    );
+  }
+  for (const change of changes.values()) {
+    if (!change.quantity.isZero()) await movement(tx, id, change.lotId, change.locationId, change.quantity, change.type);
+  }
+  return { id, batchId, quantityKg: total.toString(), allocations };
+}
+type LoadAllocation = { lotId: string; itemId: string; name: string; quantityKg: string; sourceId: string; destinationId: string };
+const loadTypes = ["PRODUCTION_ISSUE", "PRODUCTION_LOAD_EDIT"];
+async function latestBatchLoad(tx: Tx, batchId: string) {
+  const doc = await tx.businessDocument.findFirst({
+    where: { batchId, type: { in: loadTypes }, status: "POSTED", reversal: null },
+    orderBy: [{ postedAt: "desc" }, { id: "desc" }],
+    include: { command: { select: { result: true } }, movements: { include: { lot: { include: { item: true } } } } },
+  });
+  if (!doc) return null;
+  const saved = (doc.command.result as any).allocations as LoadAllocation[] | undefined;
+  const allocations = saved ?? doc.movements.filter(m => m.type === "TRANSFER" && m.signedQuantityKg.gt(0)).map(m => {
+    const source = doc.movements.find(row => row.lotId === m.lotId && row.signedQuantityKg.eq(m.signedQuantityKg.negated()));
+    ensure(source, "Не найдена исходная партия загрузки");
+    return { lotId: m.lotId, itemId: m.lot.itemId, name: m.lot.item.name, quantityKg: m.signedQuantityKg.toString(), sourceId: source.locationId, destinationId: m.locationId };
+  });
+  return { ...doc, allocations };
+}
+
 class ReserveDto extends LotDto {
   @IsString() @Matches(/\S/) @MaxLength(1000) reason!: string;
 }
 class AdjustDto {
   @IsUUID() lotId!: string;
   @IsUUID() locationId!: string;
-  @IsString() @Matches(/^\d{1,12}(?:\.\d{1,3})?$/) countedKg!: string;
+  @Transform(({ value }) => typeof value === "string" ? value.trim().replace(",", ".") : value) @IsString() @Matches(/^\d{1,12}(?:\.\d{1,3})?$/) countedKg!: string;
   @IsInt() @Min(1) version!: number;
   @IsString() @Matches(/\S/) @MaxLength(1000) reason!: string;
 }
@@ -159,10 +296,10 @@ class BatchDto {
 }
 class OutputDto {
   @IsUUID() itemId!: string;
-  @IsString() @Matches(/^\d{1,12}$/) quantityKg!: string;
+  @Transform(({ value }) => typeof value === "string" ? value.trim().replace(",", ".") : value) @IsString() @Matches(/^\d{1,12}(?:\.\d{1,3})?$/) quantityKg!: string;
 }
 class CompleteDto extends VersionDto {
-  @IsOptional() @IsString() @Matches(/^\d{1,12}$/) lossKg?: string;
+  @IsOptional() @Transform(({ value }) => typeof value === "string" ? value.trim().replace(",", ".") : value) @IsString() @Matches(/^\d{1,12}(?:\.\d{1,3})?$/) lossKg?: string;
   @IsOptional() @IsBoolean() handover?: boolean;
   @IsOptional() @IsBoolean() automaticShift?: boolean;
   @IsOptional() @IsUUID() carryoverItemId?: string;
@@ -175,7 +312,7 @@ class CompleteDto extends VersionDto {
   outputs!: OutputDto[];
 }
 class KettleRecoveryDto extends VersionDto {
-  @IsString() @Matches(/^\d{1,12}$/) quantityKg!: string;
+  @Transform(({ value }) => typeof value === "string" ? value.trim().replace(",", ".") : value) @IsString() @Matches(/^\d{1,12}(?:\.\d{1,3})?$/) quantityKg!: string;
   @IsUUID() itemId!: string;
   @IsString() @Matches(/\S/) @MaxLength(1000) reason!: string;
 }
@@ -902,8 +1039,15 @@ export class FactoryController {
         const inputUnitCost = await costing.unit(input.lotId);
         valuedInputs.push({ ...input, unitCost: inputUnitCost, totalCost: scaleCost(inputUnitCost, input.quantityKg) });
       }
+      const lastLoad = batch.status === "IN_PROGRESS" ? await latestBatchLoad(this.db, batch.id) : null;
+      const loadedLines = new Map<string, { itemId: string; name: string; quantityKg: string }>();
+      for (const row of lastLoad?.allocations ?? []) {
+        const previous = loadedLines.get(row.itemId);
+        loadedLines.set(row.itemId, { itemId: row.itemId, name: row.name, quantityKg: decimal(previous?.quantityKg ?? "0").plus(row.quantityKg).toString() });
+      }
       valued.push({
         ...batch,
+        lastLoad: lastLoad ? { id: lastLoad.id, postedAt: lastLoad.postedAt, lines: [...loadedLines.values()] } : null,
         inputs: valuedInputs,
         totalCost,
         recoveryPreview,
@@ -949,6 +1093,7 @@ export class FactoryController {
           data: {
             name: dto.name.trim(),
             kind: dto.kind,
+            showOnDashboard: dto.kind === "WASTE" && dto.showOnDashboard === true,
             wasteDisposition:
               dto.kind === "WASTE" ? dto.wasteDisposition : null,
           },
@@ -961,6 +1106,27 @@ export class FactoryController {
         };
       },
     );
+  }
+  @Post("waste/receive") receiveWaste(
+    @Req() req: AuthRequest,
+    @Headers("idempotency-key") id: string,
+    @Headers("x-recovery-epoch") epoch: string,
+    @Body() dto: WasteIntakeDto,
+  ) {
+    return this.ops.command(req.actor.id, id, epoch, "WASTE_INTAKE", dto, async tx => {
+      const item = await tx.item.findUniqueOrThrow({ where: { id: dto.itemId } });
+      ensure(item.isActive && item.kind === "WASTE", "Выберите действующий вид отходов");
+      const site = await tx.site.findFirstOrThrow();
+      const location = await tx.stockLocation.findUniqueOrThrow({ where: { id: dto.locationId }, include: { warehouse: true } });
+      ensure(location.kind === "STORAGE" && location.warehouse.siteId === site.id, "Выберите склад отходов");
+      const quantity = kg(dto.quantityKg);
+      const unitCost = dto.unitPricePerKg === undefined ? { known: false, amounts: {} } : { known: true, amounts: { [dto.currency]: decimal(dto.unitPricePerKg).toString() } };
+      await tx.businessDocument.create({ data: { id, commandId: id, type: "WASTE_INTAKE", reason: dto.notes?.trim() || "Приём отходов на склад" } });
+      const lot = await tx.stockLot.create({ data: { itemId: item.id, originDocumentId: id, openingUnitCost: unitCost } });
+      await balancesLock(tx, [{ lotId: lot.id, locationId: location.id }]);
+      await movement(tx, id, lot.id, location.id, quantity, "WASTE_INTAKE");
+      return { id, lotId: lot.id, itemId: item.id, locationId: location.id, quantityKg: quantity };
+    });
   }
   @Post("equipment") createEquipment(
     @Req() req: AuthRequest,
@@ -1021,93 +1187,18 @@ export class FactoryController {
       epoch,
       "PRODUCTION_ISSUE",
       { batchId, ...dto },
-      async (tx) => {
-        await lock(tx, `batch:${batchId}`);
-        const batch = await tx.productionBatch.findUniqueOrThrow({
-          where: { id: batchId },
-        });
-        ensure(batch.status === "IN_PROGRESS", "Плавка уже закрыта");
-        const destination = await tx.stockLocation.findUniqueOrThrow({
-          where: { id: batch.wipLocationId },
-          include: { warehouse: true },
-        });
-        const source = await tx.stockLocation.findFirstOrThrow({
-          where: {
-            name: "Основной склад",
-            kind: "STORAGE",
-            warehouse: { siteId: destination.warehouse.siteId },
-          },
-        });
-        ensure(
-          new Set(dto.lines.map((l) => l.itemId)).size === dto.lines.length,
-          "Сырьё не должно повторяться",
-        );
-        const lots = await tx.stockLot.findMany({
-          where: {
-            itemId: { in: dto.lines.map((l) => l.itemId) },
-            balances: { some: { locationId: source.id, onHandKg: { gt: 0 } } },
-          },
-          include: { item: true },
-          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-        });
-        await balancesLock(
-          tx,
-          lots.flatMap((lot) => [
-            { lotId: lot.id, locationId: source.id },
-            { lotId: lot.id, locationId: destination.id },
-          ]),
-        );
-        await tx.businessDocument.create({
-          data: {
-            id,
-            commandId: id,
-            type: "PRODUCTION_ISSUE",
-            batchId,
-            reason: "Загрузка сырья в плавку",
-          },
-        });
-        let total = decimal("0");
-        for (const line of dto.lines) {
-          const item = await tx.item.findUniqueOrThrow({
-            where: { id: line.itemId },
-          });
-          ensure(
-            item.isActive && (["MATERIAL", "WASTE"].includes(item.kind) || lots.some(l => l.itemId === item.id && l.stockKind === "MATERIAL")),
-            "Выберите доступное сырьё или отходы",
-          );
-          let remaining = decimal(kg(line.quantityKg));
-          total = total.plus(remaining);
-          for (const lot of lots.filter((l) => l.itemId === item.id && (l.stockKind ?? l.item.kind) !== "PRODUCT")) {
-            const balance = await tx.inventoryBalance.findUniqueOrThrow({
-              where: {
-                lotId_locationId: { lotId: lot.id, locationId: source.id },
-              },
-            });
-            const take = Prisma.Decimal.min(
-              balance.onHandKg.minus(balance.reservedKg),
-              remaining,
-            );
-            if (take.lte(0)) continue;
-            await movement(
-              tx,
-              id,
-              lot.id,
-              source.id,
-              take.negated(),
-              item.kind === "WASTE" ? "WASTE_REUSE" : "PRODUCTION_ISSUE",
-            );
-            await movement(tx, id, lot.id, destination.id, take, "TRANSFER");
-            remaining = remaining.minus(take);
-            if (remaining.isZero()) break;
-          }
-          ensure(
-            remaining.isZero(),
-            `Недостаточно сырья «${item.name}»: не хватает ${remaining} кг`,
-          );
-        }
-        return { id, batchId, quantityKg: total.toString() };
-      },
+      async (tx) => applyBatchLoad(tx, batchId, id, dto),
     );
+  }
+  @Post("batches/:id/load/edit") editLoad(
+    @Req() req: AuthRequest,
+    @Param("id", ParseUUIDPipe) batchId: string,
+    @Headers("idempotency-key") id: string,
+    @Headers("x-recovery-epoch") epoch: string,
+    @Body() dto: EditLoadDto,
+  ) {
+    return this.ops.command(req.actor.id, id, epoch, "PRODUCTION_LOAD_EDIT", { batchId, ...dto },
+      async tx => applyBatchLoad(tx, batchId, id, dto, dto));
   }
   @Post("inventory/transfer") transfer(
     @Req() req: AuthRequest,

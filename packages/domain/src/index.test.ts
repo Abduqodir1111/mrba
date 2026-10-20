@@ -10,8 +10,6 @@ test("tonnes and kilograms preserve exact mass", () => {
     "Infinity",
     "1e3",
     "0.0001",
-    "1.5",
-    "1234.567",
   ])
     assert.throws(() => toKg(value, "kg"));
 });
@@ -25,14 +23,17 @@ test("Tashkent shifts at midnight and exact boundaries", () => {
     currentShift(new Date("2026-01-01T02:00:00Z")).businessDate,
     "2025-12-31",
   );
-  assert.throws(() => toKg("1.2345", "t"));
+  assert.equal(toKg("1.2345", "t"), "1234.5");
   assert.equal(night.startsAt, "2026-09-21T15:00:00.000Z");
   assert.equal(night.endsAt, "2026-09-22T03:00:00.000Z");
 });
 
-test("fractional receipt weights preserve grams without relaxing whole-weight operations", () => {
+test("weights preserve grams for all operations", () => {
   assert.equal(toKg("20.5", "kg", true), "20.5");
   assert.equal(toKg("0.020501", "t", true), "20.501");
   assert.throws(() => toKg("20.5001", "kg", true));
-  assert.throws(() => toKg("20.5", "kg"));
+  assert.equal(toKg("20.5", "kg"), "20.5");
+  assert.equal(toKg("2,5", "kg"), "2.5");
+  assert.equal(toKg("0.001", "kg"), "0.001");
+  assert.throws(() => toKg("20.5", "kg", false));
 });

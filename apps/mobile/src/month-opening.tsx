@@ -23,6 +23,7 @@ type Line = {
   currency: "UZS" | "USD";
   inherited: any;
 };
+const itemLabel = (item: any) => `${item.name} · ${{ MATERIAL: "Сырьё", PRODUCT: "Продукция", WASTE: "Отходы" }[item.kind as string] ?? item.kind}`;
 const numeric = (v: string) => v.trim().replace(/\s/g, "").replace(",", ".");
 const field = {
   borderWidth: 1,
@@ -93,7 +94,7 @@ export function MonthOpening({ onSaved }: { onSaved: () => void }) {
               itemId: row.lot.itemId,
               locationId: row.locationId,
               sourceLotId: row.lotId,
-              name: row.lot.item.name,
+              name: itemLabel(row.lot.item),
               location: row.location.name,
               before: row.onHandKg,
               quantity: "",
@@ -242,7 +243,7 @@ export function MonthOpening({ onSaved }: { onSaved: () => void }) {
         </Text>
         <Choice
           title="Сырьё / продукция / отходы"
-          values={data.items}
+          values={data.items.map((item: any) => ({ id: item.id, name: itemLabel(item) }))}
           value={item}
           onChange={setItem}
         />
@@ -268,7 +269,7 @@ export function MonthOpening({ onSaved }: { onSaved: () => void }) {
                 key,
                 itemId: item,
                 locationId: location,
-                name: data.items.find((i: any) => i.id === item).name,
+                name: itemLabel(data.items.find((i: any) => i.id === item)),
                 location: data.locations.find((i: any) => i.id === location)
                   .name,
                 before: "0",

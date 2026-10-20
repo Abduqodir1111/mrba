@@ -38,6 +38,8 @@ before(async () => {
   );
   app = await createApp();
   await app.init();
+  // Keep one listener for the suite instead of opening and closing it per request.
+  await app.listen(0, "127.0.0.1");
   db = app.get(Database);
   const result = await request(app.getHttpServer())
     .post("/api/v1/auth/login")
