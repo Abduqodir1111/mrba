@@ -122,7 +122,7 @@ export class ReportsController {
         quantityKg: true,
         amount: true,
         item: { select: { name: true } },
-        shipment: { select: { id: true, currency: true, customer: { select: { name: true } }, document: { select: { occurredAt: true } } } },
+        shipment: { select: { id: true, currency: true, customer: { select: { id: true, name: true } }, document: { select: { occurredAt: true } } } },
       },
     });
     const groups = new Map<
@@ -154,9 +154,9 @@ export class ReportsController {
         a.name.localeCompare(b.name, "ru") ||
         a.currency.localeCompare(b.currency),
     );
-    const sales = new Map<string, { id: string; customerName: string; occurredAt: string; currency: string; quantityKg: string; amount: string; lines: { id: string; itemId: string; name: string; quantityKg: string; unitPricePerKg: string; amount: string }[] }>();
+    const sales = new Map<string, { id: string; customerId: string; customerName: string; occurredAt: string; currency: string; quantityKg: string; amount: string; lines: { id: string; itemId: string; name: string; quantityKg: string; unitPricePerKg: string; amount: string }[] }>();
     for (const line of lines) {
-      const sale = sales.get(line.shipment.id) ?? { id: line.shipment.id, customerName: line.shipment.customer.name, occurredAt: line.shipment.document.occurredAt.toISOString(), currency: line.shipment.currency, quantityKg: "0", amount: "0", lines: [] };
+      const sale = sales.get(line.shipment.id) ?? { id: line.shipment.id, customerId: line.shipment.customer.id, customerName: line.shipment.customer.name, occurredAt: line.shipment.document.occurredAt.toISOString(), currency: line.shipment.currency, quantityKg: "0", amount: "0", lines: [] };
       sale.quantityKg = decimal(sale.quantityKg).plus(line.quantityKg).toString();
       sale.amount = decimal(sale.amount).plus(line.amount).toString();
       sale.lines.push({ id: line.id, itemId: line.itemId, name: line.item.name, quantityKg: line.quantityKg.toString(), unitPricePerKg: line.unitPricePerKg.toString(), amount: line.amount.toString() });

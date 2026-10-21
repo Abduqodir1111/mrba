@@ -152,7 +152,7 @@ class LoadBatchDto {
 }
 class EditLoadDto {
   @IsUUID() loadId!: string;
-  @IsString() @Matches(/\S/) @MaxLength(1000) reason!: string;
+  @IsOptional() @IsString() @MaxLength(1000) reason?: string;
   @IsArray() @ArrayMinSize(0) @ArrayMaxSize(100)
   @ValidateNested({ each: true }) @Type(() => LoadLineDto) lines!: LoadLineDto[];
 }
@@ -204,7 +204,7 @@ async function applyBatchLoad(tx: Tx, batchId: string, id: string, dto: { lines:
       batchId,
       postedAt: new Date(),
       reversesId: previous?.id,
-      reason: edit?.reason ?? "Загрузка сырья в плавку",
+      reason: edit ? edit.reason?.trim() || "Исправление последней загрузки" : "Загрузка сырья в плавку",
     },
   });
   const changes = new Map<string, { lotId: string; locationId: string; quantity: Prisma.Decimal; type: string }>();

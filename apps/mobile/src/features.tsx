@@ -1,3 +1,4 @@
+import { saleReportRows, type ReportSale } from "./sales-report-data";
 import { ProductionPeriodReport } from "./production-period-report";
 import { CompletedMeltDetails } from "./completed-melt-details";
 import { savePdf } from "./save-pdf";
@@ -976,7 +977,7 @@ function Editor({
     </Modal>
   );
 }
-function CompactReportTable({ headers, widths, rows, onPress }: { headers: string[]; widths: number[]; rows: { key: string; values: string[]; total?: boolean }[]; onPress?: (key: string) => void }) {
+function CompactReportTable({ headers, widths, rows, onPress, leftColumns = [0] }: { headers: string[]; widths: number[]; rows: { key: string; values: string[]; total?: boolean }[]; onPress?: (key: string) => void; leftColumns?: number[] }) {
   const columnWidths = headers.map((header, index) => Math.max(
     index === 0 ? 180 : 110,
     widths[index] * 9,
@@ -985,7 +986,7 @@ function CompactReportTable({ headers, widths, rows, onPress }: { headers: strin
   ));
   const tableWidth = columnWidths.reduce((sum, value) => sum + value, 0);
   const cells = (values: string[], header = false, total = false) => values.map((value, index) => <View key={index} style={{ width: columnWidths[index], paddingHorizontal: 10, paddingVertical: header ? 10 : 12, justifyContent: "center", borderRightWidth: index < values.length - 1 ? 1 : 0, borderRightColor: c.line }}>
-    <Text numberOfLines={1} style={{ fontSize: 13, lineHeight: 18, color: header ? c.muted : c.ink, fontWeight: header || total ? "700" : "500", textAlign: index === 0 ? "left" : "right" }}>{value}</Text>
+    <Text numberOfLines={1} style={{ fontSize: 13, lineHeight: 18, color: header ? c.muted : c.ink, fontWeight: header || total ? "700" : "500", textAlign: leftColumns.includes(index) ? "left" : "right" }}>{value}</Text>
   </View>);
   return <View style={{ maxWidth: "100%", minWidth: 0 }}>
     <Text style={[s.muted, { fontSize: 11, marginBottom: 6 }]}>Проведите по таблице влево, чтобы увидеть все колонки →</Text>
@@ -1782,7 +1783,6 @@ export function Workspace({
                         loadingSummary: true,
                         fields: [
                           ...choices.map(row => ({ ...weight(`edit_${row.itemId}`, row.name), value: row.loaded, stockAvailableKg: row.quantity.toString(), required: false })),
-                          { ...reason, label: "Причина исправления", editableComment: true },
                         ],
                         allowDraft: true,
                         submit: (v, send) => {
@@ -1792,7 +1792,7 @@ export function Workspace({
                             if (quantity.gt(row.quantity)) throw Error(`Недостаточно сырья «${row.name}»: доступно ${fmt(row.quantity)} кг`);
                             return [{ itemId: row.itemId, quantityKg: quantity.toFixed() }];
                           });
-                          return send(`/batches/${b.id}/load/edit`, { loadId: b.lastLoad.id, reason: v.reason, lines });
+                          return send(`/batches/${b.id}/load/edit`, { loadId: b.lastLoad.id, lines });
                         },
                       });
                     }} />}
@@ -3157,7 +3157,7 @@ export function Workspace({
   );
 }
 type SalesSummaryData = {
-  sales?: { id: string; customerName: string; occurredAt: string; currency: string; quantityKg: string; amount: string; lines: { id: string; itemId: string; name: string; quantityKg: string; unitPricePerKg: string; amount: string }[] }[];
+  sales?: ReportSale[];
   rows: {
     itemId: string;
     name: string;
@@ -3180,8 +3180,10 @@ function salesMonth(previous = false) {
 }
 const displayDay = (value: string) => value.split("-").reverse().join(".");
 function SalesSummary() {
-  const [range, setRange] = useState(() => salesMonth());
-  const [preset, setPreset] = useState("month");
+  const [range, setRange] = useState(() => ({ ...salesMonth(), currentPeriod: true }));
+  const [preset, setPreset] = useState("individual");
+  const [grouped, setGrouped] = useState(false);
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [fromText, setFromText] = useState(() => displayDay(range.from));
   const [toText, setToText] = useState(() => displayDay(range.to));
   const [data, setData] = useState<SalesSummaryData | null>(null);
@@ -3193,7 +3195,7 @@ function SalesSummary() {
     setBusy(true);
     setError("");
     setData(null);
-    api<SalesSummaryData>(`/reports/sales?from=${range.from}&to=${range.to}&currentPeriod=${preset === "month"}`)
+    api<SalesSummaryData>(`/reports/sales?from=${range.from}&to=${range.to}&currentPeriod=${range.currentPeriod}`)
       .then((result) => {
         if (active) setData(result);
       })
@@ -3206,7 +3208,7 @@ function SalesSummary() {
     return () => {
       active = false;
     };
-  }, [range, preset]);
+  }, [range]);
   const apply = () => {
     const parse = (value: string) => {
       if (!/^\d{2}\.\d{2}\.\d{4}$/.test(value)) return null;
@@ -3224,13 +3226,19 @@ function SalesSummary() {
       return;
     }
     setInputError("");
-    setRange({ from, to });
+    setGrouped(true);
+    setSelectedKey(null);
+    setRange({ from, to, currentPeriod: false });
   };
+  const reportRows = saleReportRows(data?.sales ?? [], grouped);
+  const selected = reportRows.find(row => row.key === selectedKey);
+  const number = (value: string) => fmt(new Decimal(value).toDecimalPlaces(2));
   return (
     <View>
       <View style={[s.chips, { justifyContent: "center" }]}>
         {(
           [
+            ["individual", "Отдельные продажи"],
             ["month", "Этот месяц"],
             ["previous", "Прошлый месяц"],
             ["custom", "Период"],
@@ -3246,7 +3254,9 @@ function SalesSummary() {
               setInputError("");
               if (value !== "custom") {
                 const next = salesMonth(value === "previous");
-                setRange(next);
+                setGrouped(value !== "individual");
+                setSelectedKey(null);
+                setRange({ ...next, currentPeriod: value !== "previous" });
                 setFromText(displayDay(next.from));
                 setToText(displayDay(next.to));
               }
@@ -3298,111 +3308,45 @@ function SalesSummary() {
           <Btn title="Повторить" onPress={() => setRange({ ...range })} />
         </View>
       )}
-      {data && (
-        <>
-          <View
-            style={{
-              backgroundColor: c.softBlue,
-              borderRadius: 16,
-              padding: 14,
-              marginBottom: 14,
-              gap: 8,
-            }}
-          >
-            <View
-              style={{
-                flexDirection: "row",
-                justifyContent: "space-between",
-                alignItems: "center",
-                gap: 10,
-              }}
-            >
-              <Text
-                style={{
-                  fontSize: 13,
-                  fontWeight: "600",
-                  color: c.ink,
-                  flex: 1,
-                }}
-              >
-                Итого за период
-              </Text>
-              <Text
-                style={{
-                  fontSize: 13,
-                  fontWeight: "600",
-                  color: c.ink,
-                  flexShrink: 1,
-                }}
-              >
-                {fmt(data.totalKg)} кг
-              </Text>
-            </View>
-            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 12 }}>
-              {data.totals.map((total) => (
-                <View
-                  key={total.currency}
-                  style={{ flexGrow: 1, flexBasis: 120, gap: 2 }}
-                >
-                  <Text style={{ fontSize: 11, color: c.muted }}>
-                    {total.currency === "USD"
-                      ? "Доллары США"
-                      : "Узбекские сумы"}
-                  </Text>
-                  <Text
-                    style={{ fontSize: 16, fontWeight: "700", color: c.blue }}
-                  >
-                    {fmt(total.amount)} {total.currency}
-                  </Text>
-                </View>
-              ))}
-            </View>
-            {!!data.rows.length && <View style={{ gap: 10, marginTop: 6 }}>
-              <Text style={[s.text, { fontSize: 13, fontWeight: "700" }]}>Продукция и отходы</Text>
-              {[...new Map(data.rows.map(row => [row.itemId, row.name])).entries()].map(([itemId, name]) => {
-                const sales = data.rows.filter(row => row.itemId === itemId);
-                const weight = sales.reduce((sum, row) => sum.plus(row.quantityKg), new Decimal(0));
-                return <View key={itemId} style={{ backgroundColor: c.white, borderRadius: 12, padding: 12, gap: 5 }}>
-                  <Text style={[s.text, { fontWeight: "700", fontSize: 15 }]}>{name}</Text>
-                  <Row label="Всего продано" value={`${fmt(weight)} кг`} />
-                  {sales.map(row => {
-                    const average = row.averageUnitPrice ?? (new Decimal(row.quantityKg).gt(0) ? new Decimal(row.amount).div(row.quantityKg).toString() : null);
-                    return <View key={row.currency} style={sales.length > 1 ? { borderTopWidth: 1, borderColor: c.line, paddingTop: 7, marginTop: 5 } : undefined}>
-                      {sales.length > 1 && <Row label={`Продано в ${row.currency}`} value={`${fmt(row.quantityKg)} кг`} />}
-                      <Row label="Средняя цена за кг" value={average === null ? "—" : `${fmt(new Decimal(average).toDecimalPlaces(2))} ${row.currency}`} />
-                      <Row label="Итого по продукции" value={`${fmt(row.amount)} ${row.currency}`} />
-                    </View>;
-                  })}
-                </View>;
-              })}
-              <Text style={[s.muted, { fontSize: 11, lineHeight: 16 }]}>Средняя цена = сумма продаж ÷ проданный вес за выбранный период. Разные валюты считаются отдельно.</Text>
-            </View>}
+      {data && <Card style={{ padding: 12 }}>
+        <Text style={[s.text, { fontSize: 17, fontWeight: "700", marginBottom: 6 }]}>{grouped ? "Итого за период" : "Отдельные продажи"}</Text>
+        <Text style={[s.muted, { fontSize: 12, marginBottom: 12 }]}>{grouped ? "Повторные продажи объединены по покупателю, продукции и валюте. Нажмите на строку, чтобы увидеть продажи." : "Каждая продажа — отдельная строка. Показан текущий месяц открытого учётного периода. Выберите период выше, чтобы объединить повторные продажи."}</Text>
+        {!reportRows.length && <Empty text="За этот период продаж нет." />}
+        {[...new Set(reportRows.map(row => row.currency))].map(currency => {
+          const items = reportRows.filter(row => row.currency === currency);
+          const saleCount = new Set(items.flatMap(row => row.entries.map(entry => entry.saleId))).size;
+          const weight = items.reduce((sum, row) => sum.plus(row.quantityKg), new Decimal(0));
+          const amount = items.reduce((sum, row) => sum.plus(row.amount), new Decimal(0));
+          return <View key={currency} style={{ marginBottom: 14 }}>
+            <Text style={[s.text, { fontWeight: "700", marginBottom: 8 }]}>{currency}</Text>
+            <CompactReportTable
+              headers={["№ · Покупатель", "Продукция / отходы", ...(grouped ? [] : ["Дата и время · Ташкент"]), "Продаж", "Вес, кг", grouped ? "Средняя цена за кг" : "Цена за кг", "Общая сумма"]}
+              widths={[20, 24, ...(grouped ? [] : [22]), 10, 13, 17, 22]}
+              leftColumns={grouped ? [0, 1] : [0, 1, 2]}
+              onPress={grouped ? setSelectedKey : undefined}
+              rows={[
+                ...items.map((row, index) => ({ key: row.key, values: [`${index + 1}. ${row.customerName}`, row.name, ...(grouped ? [] : [date(row.entries[0].occurredAt)]), String(row.count), fmt(row.quantityKg), row.unitPrice === null ? "—" : number(row.unitPrice), number(row.amount)] })),
+                { key: `total:${currency}`, total: true, values: ["ИТОГО", "Все товары", ...(grouped ? [] : ["—"]), String(saleCount), fmt(weight), "—", number(amount.toString())] },
+              ]}
+            />
+          </View>;
+        })}
+        {grouped && !!reportRows.length && <Text style={[s.muted, { fontSize: 11 }]}>Средняя цена = сумма продаж ÷ проданный вес. Итоги по разным валютам считаются отдельно.</Text>}
+      </Card>}
+      {!!selected && grouped && <Modal visible animationType="slide" onRequestClose={() => setSelectedKey(null)}>
+        <SafeAreaView style={{ flex: 1, backgroundColor: c.bg }}>
+          <View style={{ padding: 16, flexDirection: "row", alignItems: "center", gap: 12 }}>
+            <View style={{ flex: 1 }}><Text style={[s.text, { fontWeight: "700", fontSize: 18 }]}>{selected.customerName}</Text><Text style={s.muted}>{selected.name} · {selected.currency}</Text></View>
+            <Pressable accessibilityRole="button" accessibilityLabel="Закрыть продажи покупателя" onPress={() => setSelectedKey(null)} style={{ padding: 12 }}><Ionicons name="close" size={26} color={c.ink} /></Pressable>
           </View>
-          {!!data.sales?.length && <>
-            <Text style={s.section}>Продажи за период</Text>
-            <Text style={[s.muted, { marginBottom: 12 }]}>Дата и время продажи · Ташкент</Text>
-            {data.sales.map(sale => <Card key={sale.id}>
-              <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 10, marginBottom: 10 }}>
-                <View style={{ width: 38, height: 38, borderRadius: 12, backgroundColor: c.softBlue, alignItems: "center", justifyContent: "center" }}><Ionicons name="person-outline" size={19} color={c.blue} /></View>
-                <View style={{ flex: 1, minWidth: 0 }}>
-                  <Text style={[s.text, { fontWeight: "700", fontSize: 16 }]}>{sale.customerName}</Text>
-                  <Text style={[s.muted, { marginTop: 4 }]}>{date(sale.occurredAt)}</Text>
-                </View>
-              </View>
-              {sale.lines.map(line => <View key={line.id} style={{ borderTopWidth: 1, borderColor: c.line, paddingTop: 8, marginTop: 5 }}>
-                <Text style={[s.text, { fontWeight: "600", marginBottom: 5 }]}>{line.name}</Text>
-                <Row label="Продано" value={`${fmt(line.quantityKg)} кг`} />
-                <Row label="Цена за кг" value={`${fmt(line.unitPricePerKg)} ${sale.currency}`} />
-                <Row label="Сумма" value={`${fmt(line.amount)} ${sale.currency}`} />
-              </View>)}
-              <View style={{ borderTopWidth: 1, borderColor: c.line, paddingTop: 8, marginTop: 8 }}>
-                <Row label="Итого по продаже" value={`${fmt(sale.amount)} ${sale.currency}`} />
-              </View>
-            </Card>)}
-          </>}
-          {!data.rows.length && <Empty text="За этот период продаж нет." />}
-        </>
-      )}
+          <ScrollView contentContainerStyle={{ padding: 16 }}>
+            <CompactReportTable headers={["Дата и время · Ташкент", "Вес, кг", "Цена за кг", "Сумма"]} widths={[24, 14, 17, 22]} rows={selected.entries.map((entry, index) => ({ key: `${entry.saleId}:${index}`, values: [date(entry.occurredAt), fmt(entry.quantityKg), number(entry.unitPricePerKg), number(entry.amount)] }))} />
+            <Row label="Количество продаж" value={String(selected.count)} />
+            <Row label="Всего продано" value={`${fmt(selected.quantityKg)} кг`} />
+            <Row label="Общая сумма" value={`${number(selected.amount)} ${selected.currency}`} />
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>}
     </View>
   );
 }

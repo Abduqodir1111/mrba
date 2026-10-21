@@ -2091,9 +2091,10 @@ test("editing only the latest load returns original lots, applies exact replacem
   const path = `${load}/edit`;
   await post(path, { loadId: first.id, reason: "Cannot edit an earlier load", lines: [] }, randomUUID(), 409);
   const key = randomUUID();
-  const payload = { loadId: last.id, reason: "Wrong material and weight", lines: [{ itemId: ids[0], quantityKg: "1,5" }, { itemId: ids[1], quantityKg: "0.75" }] };
+  const payload = { loadId: last.id, lines: [{ itemId: ids[0], quantityKg: "1,5" }, { itemId: ids[1], quantityKg: "0.75" }] };
   const corrected = (await rawPost(path, payload, key).expect(r => assert.equal(r.status, 201, JSON.stringify(r.body)))).body;
   assert.deepEqual((await post(path, payload, key)).body, corrected);
+  assert.equal((await db.businessDocument.findUniqueOrThrow({ where: { id: corrected.id } })).reason, "Исправление последней загрузки");
   const atWip = () => db.inventoryBalance.findMany({ where: { locationId: b.wipLocationId, onHandKg: { gt: 0 } }, include: { lot: true } });
   const rows = await atWip();
   assert.equal(rows.filter(r => r.lot.itemId === ids[0]).reduce((sum, r) => sum.plus(r.onHandKg), new Prisma.Decimal(0)).toString(), "2.75");
@@ -2221,6 +2222,7 @@ test("sales period averages are weighted by sold kilograms per product and curre
   const details = (await request(app.getHttpServer()).get(`/api/v1/reports/sales?from=${day}&to=${day}`).set("Authorization", `Bearer ${token}`).expect(200)).body;
   const secondCard = details.sales.find((sale: any) => sale.id === second.id);
   assert.equal(secondCard.customerName, payload.customerName);
+  assert.equal(secondCard.customerId, (await db.shipment.findUniqueOrThrow({ where: { id: second.id } })).customerId);
   assert.equal(secondCard.occurredAt, (await db.businessDocument.findUniqueOrThrow({ where: { id: second.id } })).occurredAt.toISOString());
   assert.equal(secondCard.lines[0].name, (await db.item.findUniqueOrThrow({ where: { id: prod } })).name);
   assert.equal(secondCard.lines[0].quantityKg, "2.5");
