@@ -407,29 +407,6 @@ export function GlassModal({ children, visible = true, ...props }: ModalProps) {
   );
 }
 
-export function SectionHeading({
-  title,
-  subtitle,
-  icon,
-}: {
-  title: string;
-  subtitle: string;
-  icon: keyof typeof Ionicons.glyphMap;
-}) {
-  return (
-    <View style={styles.heading}>
-      <View style={{ flex: 1 }}>
-        <Text style={styles.eyebrow}>MRBA / УПРАВЛЕНИЕ</Text>
-        <Text style={styles.title}>{title}</Text>
-        <Text style={styles.subtitle}>{subtitle}</Text>
-      </View>
-      <GlassSurface style={styles.headingIcon}>
-        <Ionicons name={icon} size={25} color={c.blue} />
-      </GlassSurface>
-    </View>
-  );
-}
-
 export function GlassSegments<T extends string>({
   options,
   value,
@@ -568,34 +545,5 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     textAlign: "center",
     flexShrink: 1,
-  },
-  heading: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 16,
-    marginBottom: 22,
-    paddingTop: 8,
-  },
-  eyebrow: {
-    fontSize: 9,
-    letterSpacing: 1.8,
-    fontWeight: "700",
-    color: c.muted,
-    marginBottom: 6,
-  },
-  title: {
-    fontSize: 32,
-    lineHeight: 40,
-    letterSpacing: -1.2,
-    fontWeight: "700",
-    color: c.ink,
-  },
-  subtitle: { fontSize: 12, lineHeight: 18, color: c.muted, marginTop: 4 },
-  headingIcon: {
-    width: 54,
-    height: 54,
-    borderRadius: 19,
-    alignItems: "center",
-    justifyContent: "center",
   },
 });

@@ -1,4 +1,4 @@
-import { GlassSegments, GlassButton, GlassSurface, GlassModal as Modal, glassStyles, ScreenTransition, SectionHeading, useModalDismiss } from "./glass-ui";
+import { GlassSegments, GlassButton, GlassSurface, GlassModal as Modal, glassStyles, ScreenTransition, useModalDismiss } from "./glass-ui";
 import { saleReportRows, type ReportSale } from "./sales-report-data";
 import { ProductionPeriodReport } from "./production-period-report";
 import { CompletedMeltDetails } from "./completed-melt-details";
@@ -1509,7 +1509,6 @@ export function Workspace({
   });
   return (
     <ScreenTransition transitionKey={`${section}:${batchFilter}:${inventoryView}:${salesView}`}>
-      <SectionHeading title={section === "inventory" ? "Склад" : section === "production" ? "Производство" : section === "sales" ? "Продажи" : "Управление"} subtitle={section === "inventory" ? "Материалы, остатки и движение" : section === "production" ? "От загрузки до готового металла" : section === "sales" ? "Клиенты, отгрузки и результаты" : "Справочники и контроль"} icon={section === "inventory" ? "cube-outline" : section === "production" ? "flame-outline" : section === "sales" ? "trending-up-outline" : "options-outline"} />
       {section === "inventory" && (
         <Pressable
           accessibilityRole="button"
