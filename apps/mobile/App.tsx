@@ -29,6 +29,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import {
   api,
+  invalidateApiCache,
   all,
   login,
   logout,
@@ -213,6 +214,7 @@ function FactoryApp() {
   const purchaseQuery = purchasePeriod ? `?purchaseFrom=${encodeURIComponent(purchasePeriod.from)}&purchaseTo=${encodeURIComponent(purchasePeriod.to)}` : "";
 
   useEffect(() => onSessionRemoved(() => {
+    invalidateApiCache();
     setAuthenticated(false);
     setData(null);
     setLots([]);
@@ -223,6 +225,7 @@ function FactoryApp() {
   }), []);
 
   async function reload() {
+    invalidateApiCache();
     setBusy(true);
     try {
       const [dashboard, m, sp, ls] = await Promise.all([

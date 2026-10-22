@@ -1,3 +1,4 @@
+import { cachedView, cacheView, invalidateApiCache, apiCacheRevision } from "./api";
 import { GlassSegments, GlassButton, GlassSurface, GlassModal as Modal, glassStyles, ScreenTransition, useModalDismiss } from "./glass-ui";
 import { saleReportRows, type ReportSale } from "./sales-report-data";
 import { ProductionPeriodReport } from "./production-period-report";
@@ -1201,9 +1202,10 @@ export function Workspace({
   disabled?: boolean;
   onChanged: () => void;
 }) {
-  const [data, setData] = useState<Record<string, any[]>>({});
-  const [cursors, setCursors] = useState<Record<string, string | null>>({});
-  const [busy, setBusy] = useState(true);
+  const snapshot = cachedView<{data: Record<string, any[]>; cursors: Record<string, string | null>}>(section);
+  const [data, setData] = useState<Record<string, any[]>>(() => snapshot?.data ?? {});
+  const [cursors, setCursors] = useState<Record<string, string | null>>(() => snapshot?.cursors ?? {});
+  const [busy, setBusy] = useState(!snapshot);
   const [error, setError] = useState("");
   const [actionError, setActionError] = useState("");
   const [form, setForm] = useState<Form | null>(null);
@@ -1235,7 +1237,16 @@ export function Workspace({
   const [massUnit, setMassUnit] = useState<"kg" | "t">("kg");
   const mass = (value: any) =>
     `${fmt(new Decimal(value).div(massUnit === "t" ? 1000 : 1))} ${massUnit === "t" ? "т" : "кг"}`;
-  const load = async () => {
+  const load = async (force = true) => {
+    if (force) invalidateApiCache();
+    const revision = apiCacheRevision();
+    const saved = cachedView<{data: Record<string, any[]>; cursors: Record<string, string | null>}>(section);
+    if (saved) {
+      setData(saved.data);
+      setCursors(saved.cursors);
+      setBusy(false);
+      return;
+    }
     setBusy(true);
     try {
       const routes =
@@ -1285,16 +1296,14 @@ export function Workspace({
             ] as const,
         ),
       );
-      setData(
-        Object.fromEntries(
-          results.map(([k, v]) => [k, Array.isArray(v) ? v : v.items]),
-        ),
-      );
-      setCursors(
-        Object.fromEntries(
-          results.map(([k, v]) => [k, Array.isArray(v) ? null : v.nextCursor]),
-        ),
-      );
+      if (revision !== apiCacheRevision()) return;
+      const next = {
+        data: Object.fromEntries(results.map(([k, v]) => [k, Array.isArray(v) ? v : v.items])),
+        cursors: Object.fromEntries(results.map(([k, v]) => [k, Array.isArray(v) ? null : v.nextCursor])),
+      };
+      cacheView(section, next);
+      setData(next.data);
+      setCursors(next.cursors);
       setError("");
     } catch (e) {
       setError((e as Error).message);
@@ -1303,7 +1312,7 @@ export function Workspace({
     }
   };
   useEffect(() => {
-    void load();
+    void load(false);
   }, [section, refreshKey]);
   const rows = (key: string) => data[key] ?? [];
   const filtered = (key: string) =>
@@ -3341,7 +3350,7 @@ export function Reports() {
         <Btn
           title={busy ? "Загрузка…" : "Показать отчёт"}
           disabled={busy}
-          onPress={() => void load()}
+          onPress={() => { invalidateApiCache(); void load(); }}
         />
       </Card>
       <Btn

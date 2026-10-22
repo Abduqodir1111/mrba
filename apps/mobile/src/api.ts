@@ -1,3 +1,4 @@
+import { QueryCache, cacheableRead } from "./query-cache";
 import * as SecureStore from "./secure-storage";
 import { randomUUID } from "./uuid";
 import { apiEnvironment, environmentUrl } from "./environment";
@@ -8,6 +9,12 @@ const API_URL =
 let environment = "production";
 let accessToken: string | null = null;
 let refreshFlight: Promise<void> | null = null;
+const queryCache = new QueryCache();
+export const invalidateApiCache = () => queryCache.clear();
+export const apiCacheRevision = () => queryCache.revision;
+export const cachedView = <T,>(key: string) => queryCache.peek<T>("view:" + key);
+export const cacheView = (key: string, value: unknown) => queryCache.set("view:" + key, value);
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -53,6 +60,7 @@ async function acceptTokens(data: {
   accessToken = data.accessToken;
 }
 export async function login(login: string, password: string) {
+  invalidateApiCache();
   environment = apiEnvironment(login);
   await SecureStore.setItemAsync("mrba.environment", environment);
   let deviceId = await SecureStore.getItemAsync("mrba.device");
@@ -70,6 +78,7 @@ export async function login(login: string, password: string) {
   );
 }
 export async function restore() {
+  invalidateApiCache();
   environment = (await SecureStore.getItemAsync("mrba.environment")) === "demo" ? "demo" : "production";
   const token = await SecureStore.getItemAsync("mrba.refresh");
   if (!token) return false;
@@ -98,19 +107,32 @@ export async function api<T = any>(
   path: string,
   options: RequestInit = {},
 ): Promise<T> {
-  let response = await raw(path, {
-    ...options,
-    headers: { Authorization: `Bearer ${accessToken}`, ...options.headers },
-  });
-  if (response.status === 401) {
-    await refresh();
-    response = await raw(path, {
+  const write = !["GET", "HEAD"].includes((options.method ?? "GET").toUpperCase());
+  const request = async () => {
+    let response = await raw(path, {
       ...options,
       headers: { Authorization: `Bearer ${accessToken}`, ...options.headers },
     });
+    if (response.status === 401) {
+      await refresh();
+      response = await raw(path, {
+        ...options,
+        headers: { Authorization: `Bearer ${accessToken}`, ...options.headers },
+      });
+    }
+    return parse(response);
+  };
+  if (write) invalidateApiCache();
+  try {
+    return cacheableRead(path, options)
+      ? await queryCache.read<T>(path, request)
+      : await request();
+  } finally {
+    // Also invalidate after ambiguous failures: the operation may have committed.
+    if (write) invalidateApiCache();
   }
-  return parse(response);
 }
+
 export async function logout() {
   const refreshToken = await SecureStore.getItemAsync("mrba.refresh");
   // Revocation must succeed before reporting a successful logout.
@@ -122,6 +144,7 @@ export async function logout() {
       }),
     );
   accessToken = null;
+  invalidateApiCache();
   await SecureStore.deleteItemAsync("mrba.refresh");
 }
 export async function pending(): Promise<Pending | null> {
