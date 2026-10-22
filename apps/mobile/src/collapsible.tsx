@@ -3,6 +3,7 @@ import { AccessibilityInfo, Animated, Easing, View } from "react-native";
 
 export function Collapsible({ open, animate = true, children }: React.PropsWithChildren<{ open: boolean; animate?: boolean }>) {
   const progress = useRef(new Animated.Value(open ? 1 : 0)).current;
+  const [rendered, setRendered] = useState(open);
   const [height, setHeight] = useState(0);
   const [reduceMotion, setReduceMotion] = useState(false);
   useEffect(() => {
@@ -12,15 +13,17 @@ export function Collapsible({ open, animate = true, children }: React.PropsWithC
     return () => { active = false; subscription.remove(); };
   }, []);
   useEffect(() => {
+    if (!animate) return;
+    if (open) setRendered(true);
     const animation = Animated.timing(progress, {
       toValue: open ? 1 : 0,
       duration: reduceMotion ? 0 : 240,
       easing: Easing.out(Easing.cubic),
       useNativeDriver: false,
     });
-    animation.start();
+    animation.start(({ finished }) => { if (finished && !open) setRendered(false); });
     return () => animation.stop();
-  }, [open, progress, reduceMotion]);
+  }, [open, animate, progress, reduceMotion]);
   if (!animate) return <>{children}</>;
   return <Animated.View
     pointerEvents={open ? "auto" : "none"}
@@ -28,8 +31,8 @@ export function Collapsible({ open, animate = true, children }: React.PropsWithC
     importantForAccessibility={open ? "auto" : "no-hide-descendants"}
     style={{ height: progress.interpolate({ inputRange: [0, 1], outputRange: [0, height] }), opacity: progress, overflow: "hidden" }}
   >
-    <View style={{ position: "absolute", top: 0, left: 0, right: 0 }} onLayout={(event) => setHeight(event.nativeEvent.layout.height)}>
+    {rendered && <View style={{ position: "absolute", top: 0, left: 0, right: 0 }} onLayout={(event) => setHeight(event.nativeEvent.layout.height)}>
       {children}
-    </View>
+    </View>}
   </Animated.View>;
 }

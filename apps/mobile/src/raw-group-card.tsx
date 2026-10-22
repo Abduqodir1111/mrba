@@ -1,5 +1,6 @@
+import { GlassModal as Modal, glassStyles } from "./glass-ui";
 import React, { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import Decimal from "decimal.js";
@@ -89,7 +90,7 @@ export function RawGroupCard({ category, name, quantityKg, refreshKey }: { categ
   </View>;
 }
 const s = StyleSheet.create({
-  card:{borderRadius:16,padding:16,gap:8}, row:{flexDirection:"row",justifyContent:"space-between",alignItems:"center",gap:12},
+  card:{...glassStyles.control,borderRadius:22,padding:16,gap:8}, row:{flexDirection:"row",justifyContent:"space-between",alignItems:"center",gap:12},
   title:{fontSize:17,fontWeight:"700",color:c.ink}, periodButton:{flexDirection:"row",gap:6,alignItems:"center",padding:9,borderRadius:10,backgroundColor:"#FFFFFFAA",minHeight:40},
   label:{fontSize:12,lineHeight:18,color:c.muted,flexShrink:1}, value:{fontSize:13,fontWeight:"600",color:c.ink,textAlign:"right",flexShrink:1},
   weight:{fontSize:27,lineHeight:36,fontWeight:"700",color:c.ink}, dates:{fontSize:11,lineHeight:17,color:c.muted},

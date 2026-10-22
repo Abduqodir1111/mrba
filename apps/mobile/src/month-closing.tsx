@@ -1,8 +1,8 @@
+import { glassStyles, GlassModal as Modal, useModalDismiss } from "./glass-ui";
 import { SafeAreaView } from "react-native-safe-area-context";
 import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
-  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -182,6 +182,8 @@ export function MonthClosing({
   const [preview, setPreview] = useState<any>(null),
     [archive, setArchive] = useState<any[]>([]),
     [selected, setSelected] = useState<any>(null);
+  const { closing: archiveClosing, dismiss: dismissArchive } = useModalDismiss(!!selected);
+  const closeArchive = () => dismissArchive(() => setSelected(null));
   const [busy, setBusy] = useState(false),
     [closing, setClosing] = useState(false),
     [error, setError] = useState("");
@@ -263,7 +265,7 @@ export function MonthClosing({
       {busy && <ActivityIndicator color={c.blue} />}
       {selected ? (
         <>
-          {button("← Текущий период и архив", () => setSelected(null))}
+          {button("← Текущий период и архив", () => closeArchive())}
           <View style={[s.card, { backgroundColor: c.softBlue }]}>
             <Text style={s.title}>Закрытый отчёт №{selected.number}</Text>
             <Text style={s.note}>
@@ -512,9 +514,9 @@ export function MonthClosing({
   );
   return selected ? (
     <Modal
-      visible
+      visible={!archiveClosing}
       animationType="slide"
-      onRequestClose={() => setSelected(null)}
+      onRequestClose={() => closeArchive()}
     >
       <SafeAreaView style={{ flex: 1, backgroundColor: c.bg }}>
         <ScrollView
@@ -531,8 +533,7 @@ export function MonthClosing({
 }
 const s = StyleSheet.create({
   card: {
-    backgroundColor: c.white,
-    borderRadius: 18,
+    ...glassStyles.card,
     padding: 18,
     gap: 10,
     borderWidth: 1,

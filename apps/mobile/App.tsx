@@ -1,3 +1,4 @@
+import { AmbientBackground, GlassButton, GlassSurface, GlassModal as Modal, GlassPreferencesProvider, ScreenTransition, glassStyles, useModalDismiss } from "./src/glass-ui";
 import { MonthClosing } from "./src/month-closing";
 import { RawGroupCard } from "./src/raw-group-card";
 import { DateTimeField } from "./src/date-time-field";
@@ -13,7 +14,6 @@ import {
   Alert,
   AppState,
   Image,
-  Modal,
   Linking,
   Platform,
   Pressable,
@@ -115,27 +115,9 @@ function Button({
   secondary?: boolean;
   disabled?: boolean;
 }) {
-  return (
-    <Pressable
-      accessibilityRole="button"
-      disabled={busy || disabled}
-      onPress={onPress}
-      style={({ pressed }) => [
-        s.button,
-        secondary && s.buttonSecondary,
-        (disabled || pressed) && { opacity: 0.5 },
-      ]}
-    >
-      {busy ? (
-        <ActivityIndicator color={secondary ? c.blue : "white"} />
-      ) : (
-        <Text style={[s.buttonText, secondary && { color: c.blue }]}>
-          {title}
-        </Text>
-      )}
-    </Pressable>
-  );
+  return <GlassButton title={title} onPress={onPress} secondary={secondary} busy={busy} disabled={disabled} style={{ marginTop: 0 }} />;
 }
+
 function Field({
   label,
   ...props
@@ -190,10 +172,15 @@ function Heading({
 export default function App() {
   return (
     <SafeAreaProvider>
+      <GlassPreferencesProvider>
       <KeyboardProvider>
+        <View style={{ flex: 1, backgroundColor: c.bg }}>
+        <AmbientBackground />
         <StatusBar style="dark" />
         <FactoryApp />
+        </View>
       </KeyboardProvider>
+      </GlassPreferencesProvider>
     </SafeAreaProvider>
   );
 }
@@ -458,6 +445,7 @@ function FactoryApp() {
         }
         keyboardShouldPersistTaps="handled"
       >
+        <ScreenTransition transitionKey={`${tab}:${moreView}`} style={{ gap: 16 }}>
         {tab === "Главная" && (
           <>
             {data?.openingPending&&<View style={[s.currencyCard,{padding:16,marginBottom:16}]}><Text style={s.rowTitle}>Нужен пересчёт складов</Text><Text style={s.footnote}>Месяц закрыт, склады обнулены. Введите фактические остатки: «Ещё → Закрытие месяца».</Text></View>}
@@ -473,16 +461,16 @@ function FactoryApp() {
               {data?.ungroupedRawKg && new Decimal(data.ungroupedRawKg).gt(0) && <Text style={s.footnote}>Без группы: {format(data.ungroupedRawKg)} кг</Text>}
             </View>
             <LinearGradient
-              colors={["#17564F", "#103B39"]}
+              colors={["#DCEFEA", "#F5FCFA"]}
               start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}
               style={[s.hero, { marginTop: 16 }]}
             >
               <View style={s.heroTop}>
                 <View style={s.shiftTag}>
-                  <Icon name="checkmark-circle-outline" color="#A7D8CB" size={18} />
+                  <Icon name="checkmark-circle-outline" color={c.green} size={18} />
                   <Text style={s.heroLabel}>Готовая продукция</Text>
                 </View>
-                <Icon name="layers-outline" color="#A7D8CB" size={22} />
+                <Icon name="layers-outline" color={c.green} size={22} />
               </View>
               <Text style={s.heroCaption}>Остатки на всех складах</Text>
               <View style={s.heroValueRow}>
@@ -515,7 +503,7 @@ function FactoryApp() {
               </View>
             </LinearGradient>
             <LinearGradient
-              colors={["#193C56", "#102A3F"]}
+              colors={["#DCE8FC", "#F6F9FF"]}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 1 }}
               style={[s.hero, { marginTop: 16 }]}
@@ -528,7 +516,7 @@ function FactoryApp() {
                         ? "sunny-outline"
                         : "moon-outline"
                     }
-                    color="#A7C5DE"
+                    color={c.blue}
                     size={16}
                   />
                   <Text style={s.heroLabel}>
@@ -783,8 +771,10 @@ function FactoryApp() {
               : "Подключение к серверу"}
           </Text>
         </View>
+        </ScreenTransition>
       </KeyboardAwareScrollView>
       <SafeAreaView edges={["bottom"]} style={s.tabBar}>
+        <GlassSurface material style={s.tabGlass}>
         <View style={s.tabRow}>
           {tabs.map((t) => (
             <Pressable
@@ -794,7 +784,7 @@ function FactoryApp() {
               onPress={() => setTab(t.label)}
               style={s.tab}
             >
-              <View style={s.tabIcon}>
+              <View style={[s.tabIcon, tab === t.label && s.tabIconActive]}>
                 <Icon
                   name={t.icon}
                   color={tab === t.label ? c.blue : c.muted}
@@ -815,6 +805,7 @@ function FactoryApp() {
             </Pressable>
           ))}
         </View>
+        </GlassSurface>
       </SafeAreaView>
       {modal && (
         <EntryModal
@@ -867,8 +858,8 @@ function EntryModal({
   kind,
   materials,
   suppliers,
-  onClose,
-  onSaved,
+  onClose: finishClose,
+  onSaved: finishSaved,
   onAmbiguous,
 }: {
   kind: "purchase" | "material" | "supplier";
@@ -878,6 +869,9 @@ function EntryModal({
   onSaved: () => Promise<void>;
   onAmbiguous: () => void;
 }) {
+  const { closing, dismiss } = useModalDismiss();
+  const onClose = () => dismiss(finishClose);
+  const onSaved = async () => { dismiss(() => { void finishSaved(); }); };
   const [name, setName] = useState("");
   const [material, setMaterial] = useState("");
   const [supplierName, setSupplierName] = useState("");
@@ -985,6 +979,7 @@ function EntryModal({
   }
   return (
     <Modal
+      visible={!closing}
       animationType="slide"
       presentationStyle="pageSheet"
       onRequestClose={onClose}
@@ -1169,7 +1164,7 @@ const s = StyleSheet.create({
     width: "100%",
     maxWidth: Platform.OS === "web" ? 760 : undefined,
     alignSelf: "center",
-    backgroundColor: c.bg,
+    backgroundColor: "transparent",
     ...(Platform.OS === "web"
       ? {
           borderLeftWidth: 1,
@@ -1269,16 +1264,16 @@ const s = StyleSheet.create({
   },
   dot: { width: 5, height: 5, borderRadius: 3, backgroundColor: c.green },
   onlineText: { fontSize: 10, fontWeight: "600", color: c.green },
-  hero: { padding: 22, borderRadius: 24, overflow: "hidden" },
+  hero: { ...glassStyles.card, padding: 23, borderRadius: 28, overflow: "hidden" },
   heroTop: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
   },
   shiftTag: { flexDirection: "row", alignItems: "center", gap: 7 },
-  heroLabel: { fontSize: 12, color: "#C0D4E3", fontWeight: "500" },
-  heroHours: { fontSize: 12, color: "#A4C1D5", fontVariant: ["tabular-nums"] },
-  heroCaption: { fontSize: 14, color: "#BDD0DD", marginTop: 28 },
+  heroLabel: { fontSize: 12, color: c.muted, fontWeight: "500" },
+  heroHours: { fontSize: 12, color: c.muted, fontVariant: ["tabular-nums"] },
+  heroCaption: { fontSize: 14, color: c.muted, marginTop: 28 },
   heroValueRow: {
     flexDirection: "row",
     alignItems: "baseline",
@@ -1288,17 +1283,17 @@ const s = StyleSheet.create({
   heroValue: {
     fontSize: 54,
     fontWeight: "600",
-    color: "white",
+    color: c.ink,
     letterSpacing: -2,
     fontVariant: ["tabular-nums"],
   },
-  heroUnit: { fontSize: 25, color: "#91B0C6" },
+  heroUnit: { fontSize: 25, color: c.muted },
   heroBottom: {
     flexDirection: "row",
     alignItems: "center",
     gap: 13,
     borderTopWidth: 1,
-    borderColor: "#345065",
+    borderColor: c.line,
     marginTop: 20,
     paddingTop: 16,
   },
@@ -1308,22 +1303,22 @@ const s = StyleSheet.create({
     gap: 16,
     paddingVertical: 14,
     borderTopWidth: 1,
-    borderTopColor: "#36536A",
+    borderTopColor: c.line,
   },
   heroMaterialName: {
     flex: 1,
-    color: "#E8F1F7",
+    color: c.ink,
     fontSize: 16,
     fontWeight: "500",
   },
   heroMaterialWeight: {
-    color: "#FFFFFF",
+    color: c.ink,
     fontSize: 17,
     fontWeight: "600",
     fontVariant: ["tabular-nums"],
   },
-  heroSmall: { fontSize: 12, color: "#ADC5D6" },
-  heroDivider: { width: 1, height: 12, backgroundColor: "#466073" },
+  heroSmall: { fontSize: 12, color: c.muted },
+  heroDivider: { width: 1, height: 12, backgroundColor: c.line },
   metrics: { flexDirection: "row", gap: 12 },
   metric: {
     flex: 1,
@@ -1358,14 +1353,15 @@ const s = StyleSheet.create({
   link: { fontSize: 12, fontWeight: "600", color: c.blue },
   actions: { gap: 10, alignSelf: "stretch" },
   action: {
+    ...glassStyles.card,
     flexDirection: "row",
     alignItems: "center",
     minHeight: 88,
     borderWidth: 1,
     borderColor: c.line,
-    backgroundColor: "white",
-    borderRadius: 18,
-    padding: 16,
+    backgroundColor: c.surface,
+    borderRadius: 23,
+    padding: 17,
     gap: 14,
   },
   actionDisabled: { backgroundColor: "#F7F8FA" },
@@ -1374,10 +1370,7 @@ const s = StyleSheet.create({
   actionTitle: { fontSize: 16, lineHeight: 22, fontWeight: "600", color: c.ink },
   actionSubtitle: { fontSize: 12, lineHeight: 18, color: c.muted },
   currencyCard: {
-    borderWidth: 1,
-    borderColor: c.line,
-    borderRadius: 18,
-    backgroundColor: "white",
+    ...glassStyles.card,
     paddingHorizontal: 15,
   },
   currencyRow: {
@@ -1463,10 +1456,12 @@ const s = StyleSheet.create({
     gap: 6,
     marginTop: 4,
   },
-  tabBar: { backgroundColor: "white", borderTopWidth: 1, borderColor: c.line },
-  tabRow: { flexDirection: "row", paddingTop: 8, paddingHorizontal: 6 },
-  tab: { flex: 1, alignItems: "center", gap: 4, paddingBottom: 6 },
-  tabIcon: { paddingHorizontal: 13, paddingVertical: 3 },
+  tabBar: { backgroundColor: "transparent", paddingHorizontal: 12, paddingTop: 6, paddingBottom: 8 },
+  tabGlass: { borderRadius: 28, padding: 4, backgroundColor: "rgba(255,255,255,0.72)" },
+  tabRow: { flexDirection: "row", paddingTop: 5, paddingHorizontal: 2 },
+  tab: { flex: 1, minHeight: 59, alignItems: "center", gap: 4, paddingBottom: 4 },
+  tabIcon: { paddingHorizontal: 15, paddingVertical: 5, borderRadius: 17 },
+  tabIconActive: { backgroundColor: "#DBE8FF" },
   tabIndicator: {
     width: 4,
     height: 4,
@@ -1562,7 +1557,8 @@ const s = StyleSheet.create({
   },
   lotWeight: { fontSize: 17, fontWeight: "700", color: c.ink },
   profile: {
-    backgroundColor: "white",
+    ...glassStyles.card,
+    backgroundColor: c.surface,
     padding: 20,
     borderRadius: 20,
     flexDirection: "row",

@@ -1,3 +1,4 @@
+import { GlassSegments, GlassButton, GlassSurface, GlassModal as Modal, glassStyles, ScreenTransition, SectionHeading, useModalDismiss } from "./glass-ui";
 import { saleReportRows, type ReportSale } from "./sales-report-data";
 import { ProductionPeriodReport } from "./production-period-report";
 import { CompletedMeltDetails } from "./completed-melt-details";
@@ -14,7 +15,6 @@ import {
   ActivityIndicator,
   Alert,
   Linking,
-  Modal,
   Platform,
   Pressable,
   Share,
@@ -154,29 +154,12 @@ export const Btn = ({
   disabled?: boolean;
 }) => {
   const icon = actionIcon(title, danger);
-  const displayTitle = title.replace(/^\+\s*/, "");
-  return <Pressable
-    accessibilityRole="button"
-    disabled={disabled}
-    onPress={onPress}
-    style={({ pressed }) => [s.button, secondary && s.secondary, danger && s.dangerButton, pressed && !disabled && s.buttonPressed, disabled && s.buttonDisabled]}
-  >
-    <Ionicons name={icon as any} size={17} color={danger ? "#B84040" : secondary ? c.blue : c.white} />
-    <Text
-      style={[
-        s.buttonText,
-        secondary && { color: c.blue },
-        danger && { color: "#B84040" },
-      ]}
-      numberOfLines={2}
-    >
-      {displayTitle}
-    </Text>
-  </Pressable>
+  return <GlassButton title={title.replace(/^\+\s*/, "")} onPress={onPress} icon={icon as any} secondary={secondary} danger={danger} disabled={disabled} />;
 };
 const Card = ({ children, style }: { children: React.ReactNode; style?: any }) => (
-  <View style={[s.card, style]}>{children}</View>
+  <GlassSurface style={[s.card, style]}>{children}</GlassSurface>
 );
+
 const Title = ({ title, sub }: { title: string; sub?: string }) => (
   <View style={{ marginBottom: 20 }}>
     <Text style={s.eyebrow}>MRBA · КАТТАКУРГАН</Text>
@@ -254,7 +237,7 @@ export function MaterialDropdown({ options, value, onChange, disabled, label, cr
       </Text>
       <Ionicons name={open ? "chevron-up" : "chevron-down"} size={18} color={c.muted} />
     </Pressable>
-    {open && <View style={{ marginTop: 6, borderWidth: 1, borderColor: c.line, borderRadius: 12, overflow: "hidden", backgroundColor: c.white }}>
+    <Collapsible open={open}><View style={{ marginTop: 6, borderWidth: 1, borderColor: c.line, borderRadius: 12, overflow: "hidden", backgroundColor: c.white }}>
       <TextInput
         accessibilityLabel={`Поиск: ${label}`}
         placeholder={creatable ? "Найти или ввести новое название" : "Поиск"}
@@ -280,7 +263,7 @@ export function MaterialDropdown({ options, value, onChange, disabled, label, cr
         </Pressable>}
         {!matches.length && !creatable && <Text style={[s.muted, { padding: 14 }]}>Ничего не найдено</Text>}
       </ScrollView>
-    </View>}
+    </View></Collapsible>
   </View>;
 }
 type Form = {
@@ -338,8 +321,8 @@ const actionLabels: Record<string, string> = {
 };
 function Editor({
   form,
-  close,
-  saved,
+  close: finishClose,
+  saved: finishSaved,
   failed,
 }: {
   form: Form;
@@ -347,6 +330,9 @@ function Editor({
   saved: () => void;
   failed: () => void;
 }) {
+  const { closing, dismiss } = useModalDismiss();
+  const close = () => dismiss(finishClose);
+  const saved = () => dismiss(finishSaved);
   const handover = !!form.allowHandover;
   const [expandedExtras, setExpandedExtras] = useState<Record<string, boolean>>({});
   const actionLabel = handover
@@ -543,6 +529,7 @@ function Editor({
   };
   return (
     <Modal
+      visible={!closing}
       animationType="slide"
       presentationStyle="pageSheet"
       onRequestClose={() => !busy && close()}
@@ -553,6 +540,7 @@ function Editor({
             <View style={s.modalHead}>
               <Text style={s.section}>{form.title}</Text>
               <Pressable
+                accessibilityRole="button"
                 accessibilityLabel="Закрыть"
                 disabled={busy}
                 onPress={close}
@@ -1001,6 +989,8 @@ function CompactReportTable({ headers, widths, rows, onPress, leftColumns = [0] 
 function ReceiptSummaryCard({ lines, period, supplier, title = "Средняя цена сырья за период" }: { lines: any[]; period: string; supplier: string; title?: string }) {
   const groups = receiptSummary(lines);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const { closing: selectionClosing, dismiss: dismissSelection } = useModalDismiss(!!selectedKey);
+  const closeSelection = () => dismissSelection(() => setSelectedKey(null));
   const selected = groups.find(group => group.key === selectedKey);
   if (!groups.length) return null;
   const currencies = [...new Set<string>(groups.map(group => group.currency))];
@@ -1024,7 +1014,7 @@ function ReceiptSummaryCard({ lines, period, supplier, title = "Средняя �
     <Text style={[s.muted, { fontSize: 10 }]}>Скидки = вручную + процентная в кг. Цена — средневзвешенная. Нажмите строку для подробностей.</Text>
     {groups.some(group => group.unpriced) && <Text style={[s.muted, { fontSize: 10 }]}>* Сумма неполная: есть позиции без цены. «—» — цена не указана.</Text>}
     <Text style={[s.muted, { fontSize: 10, marginTop: 5 }]}>Принято — после возврата, до расхода. Текущий остаток показан отдельно.</Text>
-    {!!selected && <Modal visible transparent animationType="fade" onRequestClose={() => setSelectedKey(null)}>
+    {!!selected && <Modal visible={!selectionClosing} transparent animationType="fade" onRequestClose={() => closeSelection()}>
       <View style={{ flex: 1, backgroundColor: "#0008", justifyContent: "center", padding: 20 }}><View style={{ backgroundColor: c.white, borderRadius: 16, padding: 16 }}>
         <Text style={s.section}>{selected.name}</Text>
         <Row label="Получено" value={`${fmt(selected.gross)} кг`} />
@@ -1035,7 +1025,7 @@ function ReceiptSummaryCard({ lines, period, supplier, title = "Средняя �
         <Row label="Вес к оплате" value={`${fmt(selected.payable)} кг`} />
         <Row label="Сумма по указанным ценам" value={`${number(selected.amount)} ${selected.currency}`} />
         {!!selected.unpriced && <Text style={s.muted}>Без цены: {selected.unpriced} из {selected.count} позиций.</Text>}
-        <Btn title="Закрыть" onPress={() => setSelectedKey(null)} />
+        <Btn title="Закрыть" onPress={() => closeSelection()} />
       </View></View>
     </Modal>}
   </Card>;
@@ -1233,6 +1223,10 @@ export function Workspace({
   const [stockPeriodError, setStockPeriodError] = useState("");
   const [stockFiltersOpen, setStockFiltersOpen] = useState(false);
   const [stockReport, setStockReport] = useState("stock");
+  const { closing: filterClosing, dismiss: dismissFilter } = useModalDismiss(stockFiltersOpen);
+  const closeStockFilters = () => dismissFilter(() => setStockFiltersOpen(false));
+  const { closing: completedClosing, dismiss: dismissCompleted } = useModalDismiss(!!completedBatchId);
+  const closeCompleted = () => dismissCompleted(() => setCompletedBatchId(null));
   const [stockFilterDraft, setStockFilterDraft] = useState({from:"",to:"",supplier:"",material:"",report:"stock"});
   const [stockSupplier, setStockSupplier] = useState("");
   const [stockMaterial, setStockMaterial] = useState("");
@@ -1514,7 +1508,8 @@ export function Workspace({
       }),
   });
   return (
-    <View>
+    <ScreenTransition transitionKey={`${section}:${batchFilter}:${inventoryView}:${salesView}`}>
+      <SectionHeading title={section === "inventory" ? "Склад" : section === "production" ? "Производство" : section === "sales" ? "Продажи" : "Управление"} subtitle={section === "inventory" ? "Материалы, остатки и движение" : section === "production" ? "От загрузки до готового металла" : section === "sales" ? "Клиенты, отгрузки и результаты" : "Справочники и контроль"} icon={section === "inventory" ? "cube-outline" : section === "production" ? "flame-outline" : section === "sales" ? "trending-up-outline" : "options-outline"} />
       {section === "inventory" && (
         <Pressable
           accessibilityRole="button"
@@ -1550,35 +1545,7 @@ export function Workspace({
         })} />}
       {section === "production" && (
         <>
-          <View style={s.productionTabs}>
-            {(
-              [
-                ["IN_PROGRESS", "В работе"],
-                ["COMPLETED", "Завершено"],
-              ] as const
-            ).map(([value, label]) => (
-              <Pressable
-                key={value}
-                accessibilityRole="tab"
-                accessibilityState={{ selected: batchFilter === value }}
-                onPress={() => { if (value !== batchFilter) { setBatchFilter(value); setCompletedPeriodActive(false); } }}
-                style={({ pressed }) => [
-                  s.productionTab,
-                  batchFilter === value && s.productionTabActive,
-                  pressed && { opacity: 0.75 },
-                ]}
-              >
-                <Text
-                  style={[
-                    s.productionTabText,
-                    { color: batchFilter === value ? c.white : c.muted },
-                  ]}
-                >
-                  {label}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
+          <GlassSegments options={[["IN_PROGRESS", "В работе"], ["COMPLETED", "Завершено"]] as const} value={batchFilter} onChange={value => { if (value !== batchFilter) { setBatchFilter(value); setCompletedPeriodActive(false); } }} />
         </>
       )}
       {busy && <ActivityIndicator color={c.blue} />}
@@ -1914,25 +1881,19 @@ export function Workspace({
         </>
       )}
       {section === "inventory" && <>
-        <View style={s.productionTabs}>
-          {([ ["stock", "Остатки"], ["history", "История приходов"] ] as const).map(([value, title]) => <Pressable
-            key={value} accessibilityRole="tab" accessibilityState={{ selected: inventoryView === value }}
-            onPress={() => setInventoryView(value)} style={[s.productionTab, inventoryView === value && s.productionTabActive]}>
-            <Text style={[s.productionTabText, { color: inventoryView === value ? c.white : c.muted }]}>{title}</Text>
-          </Pressable>)}
-        </View>
+        <GlassSegments options={[["stock", "Остатки"], ["history", "История приходов"]] as const} value={inventoryView} onChange={setInventoryView} />
         {stockReport === "average" && <ReceiptSummaryCard lines={visibleReceiptLines.filter(line => line.material.name.toLowerCase().includes(search.toLowerCase()))} period={stockReportPeriod} supplier={stockSupplier} />}
         {(stockReport === "supplier" || stockReport === "general") && <SupplierSettlementReport key={stockReport} general={stockReport === "general"} lines={visibleReceiptLines.filter(line => line.material.name.toLowerCase().includes(search.toLowerCase()))} period={stockReportPeriod} supplier={stockReport === "general" ? "" : stockSupplier} pdfFilters={{from:stockFrom?new Date(stockPeriod.from).toISOString():undefined,to:stockTo?new Date(stockPeriod.to).toISOString():undefined,itemId:stockMaterial||undefined,search:search.trim()||undefined}} />}
         {stockReport === "average" && !visibleReceiptLines.some(line => line.status === "POSTED") && <Empty text="За выбранный период приходов нет." />}
         {inventoryView === "history" && <ReceiptHistory key={`${stockFrom}|${stockTo}|${stockSupplier}|${stockMaterial}`} lines={visibleReceiptLines} search={search} edit={setForm} />}
       </>}
-          {section === "inventory" && stockFiltersOpen && <Modal transparent animationType="fade" onRequestClose={() => setStockFiltersOpen(false)}>
+          {section === "inventory" && stockFiltersOpen && <Modal visible={!filterClosing} transparent animationType="fade" onRequestClose={() => closeStockFilters()}>
             <KeyboardProvider>
               <View style={{flex:1,backgroundColor:"rgba(15,30,45,0.35)",justifyContent:"center",padding:16}}>
                 <View style={{width:"100%",maxWidth:480,maxHeight:"90%",alignSelf:"center",backgroundColor:c.white,borderRadius:22,overflow:"hidden"}}>
                   <View style={s.modalHead}>
                     <Text style={s.section}>Фильтры склада</Text>
-                    <Pressable accessibilityRole="button" accessibilityLabel="Закрыть фильтры" onPress={() => setStockFiltersOpen(false)} style={s.modalClose}><Ionicons name="close" size={20} color={c.ink} /></Pressable>
+                    <Pressable accessibilityRole="button" accessibilityLabel="Закрыть фильтры" onPress={() => closeStockFilters()} style={s.modalClose}><Ionicons name="close" size={20} color={c.ink} /></Pressable>
                   </View>
                   <KeyboardAwareScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{padding:16}}>
                     <Text style={s.label}>Вид отчёта</Text>
@@ -1961,10 +1922,10 @@ export function Workspace({
               if (Number.isNaN(from) || Number.isNaN(to) || from > to) { setStockPeriodError("Проверьте даты: начало должно быть раньше конца периода."); return; }
               if (stockFilterDraft.report === "supplier" && !stockFilterDraft.supplier) { setStockPeriodError("Для расчёта выберите основного поставщика."); return; }
               setStockReport(stockFilterDraft.report);
-              setStockPeriod({from,to}); setStockFrom(stockFilterDraft.from); setStockTo(stockFilterDraft.to); setStockSupplier(stockFilterDraft.report === "general" ? "" : stockFilterDraft.supplier); setStockMaterial(stockFilterDraft.material); setStockPeriodError(""); setStockFiltersOpen(false);
+              setStockPeriod({from,to}); setStockFrom(stockFilterDraft.from); setStockTo(stockFilterDraft.to); setStockSupplier(stockFilterDraft.report === "general" ? "" : stockFilterDraft.supplier); setStockMaterial(stockFilterDraft.material); setStockPeriodError(""); closeStockFilters();
 
                     }} />
-                    <Btn secondary title="Сбросить фильтры" onPress={() => { setStockFrom("");setStockTo("");setStockPeriod({from:-Infinity,to:Infinity});setStockSupplier("");setStockMaterial("");setStockReport("stock");setStockPeriodError("");setStockFiltersOpen(false); }} />
+                    <Btn secondary title="Сбросить фильтры" onPress={() => { setStockFrom("");setStockTo("");setStockPeriod({from:-Infinity,to:Infinity});setStockSupplier("");setStockMaterial("");setStockReport("stock");setStockPeriodError("");closeStockFilters(); }} />
                   </View>
                 </View>
               </View>
@@ -2434,34 +2395,7 @@ export function Workspace({
         </>
       )}
       {section === "sales" && (
-        <View style={s.productionTabs}>
-          {(
-            [
-              ["sale", "Продажи"],
-              ["report", "Отчёт"],
-            ] as const
-          ).map(([value, label]) => (
-            <Pressable
-              key={value}
-              accessibilityRole="tab"
-              accessibilityState={{ selected: salesView === value }}
-              onPress={() => setSalesView(value)}
-              style={[
-                s.productionTab,
-                salesView === value && s.productionTabActive,
-              ]}
-            >
-              <Text
-                style={[
-                  s.productionTabText,
-                  { color: salesView === value ? c.white : c.muted },
-                ]}
-              >
-                {label}
-              </Text>
-            </Pressable>
-          ))}
-        </View>
+        <GlassSegments options={[["sale", "Продажи"], ["report", "Отчёт"]] as const} value={salesView} onChange={setSalesView} />
       )}
       {section === "sales" && salesView === "report" && <SalesSummary />}
       {section === "sales" && salesView === "sale" && (
@@ -2472,6 +2406,7 @@ export function Workspace({
           </View>
           <View style={s.chips}>
             <Btn
+              secondary
               title="+ Договор"
               onPress={() =>
                 setForm({
@@ -3119,11 +3054,11 @@ export function Workspace({
           />
         ))}
       {!!completedBatch && (
-        <Modal visible animationType="slide" onRequestClose={() => setCompletedBatchId(null)}>
+        <Modal visible={!completedClosing} animationType="slide" onRequestClose={closeCompleted}>
           <SafeAreaView style={s.modal}>
             <View style={s.modalHead}>
               <Text style={[s.section, { flex: 1, marginBottom: 0 }]}>Результат плавки</Text>
-              <Pressable accessibilityRole="button" accessibilityLabel="Закрыть результат плавки" onPress={() => setCompletedBatchId(null)} style={s.modalClose}>
+              <Pressable accessibilityRole="button" accessibilityLabel="Закрыть результат плавки" onPress={() => closeCompleted()} style={s.modalClose}>
                 <Ionicons name="close" size={22} color={c.ink} />
               </Pressable>
             </View>
@@ -3153,7 +3088,7 @@ export function Workspace({
           }}
         />
       )}
-    </View>
+    </ScreenTransition>
   );
 }
 type SalesSummaryData = {
@@ -3231,6 +3166,8 @@ function SalesSummary() {
     setRange({ from, to, currentPeriod: false });
   };
   const reportRows = saleReportRows(data?.sales ?? [], grouped);
+  const { closing: selectionClosing, dismiss: dismissSelection } = useModalDismiss(!!selectedKey);
+  const closeSelection = () => dismissSelection(() => setSelectedKey(null));
   const selected = reportRows.find(row => row.key === selectedKey);
   const number = (value: string) => fmt(new Decimal(value).toDecimalPlaces(2));
   return (
@@ -3333,11 +3270,11 @@ function SalesSummary() {
         })}
         {grouped && !!reportRows.length && <Text style={[s.muted, { fontSize: 11 }]}>Средняя цена = сумма продаж ÷ проданный вес. Итоги по разным валютам считаются отдельно.</Text>}
       </Card>}
-      {!!selected && grouped && <Modal visible animationType="slide" onRequestClose={() => setSelectedKey(null)}>
+      {!!selected && grouped && <Modal visible={!selectionClosing} animationType="slide" onRequestClose={() => closeSelection()}>
         <SafeAreaView style={{ flex: 1, backgroundColor: c.bg }}>
           <View style={{ padding: 16, flexDirection: "row", alignItems: "center", gap: 12 }}>
             <View style={{ flex: 1 }}><Text style={[s.text, { fontWeight: "700", fontSize: 18 }]}>{selected.customerName}</Text><Text style={s.muted}>{selected.name} · {selected.currency}</Text></View>
-            <Pressable accessibilityRole="button" accessibilityLabel="Закрыть продажи покупателя" onPress={() => setSelectedKey(null)} style={{ padding: 12 }}><Ionicons name="close" size={26} color={c.ink} /></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel="Закрыть продажи покупателя" onPress={() => closeSelection()} style={{ padding: 12 }}><Ionicons name="close" size={26} color={c.ink} /></Pressable>
           </View>
           <ScrollView contentContainerStyle={{ padding: 16 }}>
             <CompactReportTable headers={["Дата и время · Ташкент", "Вес, кг", "Цена за кг", "Сумма"]} widths={[24, 14, 17, 22]} rows={selected.entries.map((entry, index) => ({ key: `${entry.saleId}:${index}`, values: [date(entry.occurredAt), fmt(entry.quantityKg), number(entry.unitPricePerKg), number(entry.amount)] }))} />
@@ -4042,7 +3979,7 @@ export function LeadAgent() {
 }
 
 const s = StyleSheet.create({
-  receiptAction: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: c.blue, borderRadius: 18, padding: 16, marginBottom: 16, minHeight: 80 },
+  receiptAction: { ...glassStyles.card, shadowColor: c.blue, shadowOpacity: 0.18, shadowRadius: 16, borderColor: "#67A0FF", flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: c.blue, borderRadius: 24, padding: 19, marginBottom: 10, minHeight: 90 },
   receiptActionIcon: { width: 44, height: 44, borderRadius: 14, backgroundColor: "rgba(255,255,255,0.16)", alignItems: "center", justifyContent: "center" },
   receiptActionTitle: { color: c.white, fontSize: 16, lineHeight: 21, fontWeight: "700" },
   receiptActionHint: { color: "rgba(255,255,255,0.85)", fontSize: 12, lineHeight: 17, marginTop: 4 },
@@ -4294,8 +4231,9 @@ const s = StyleSheet.create({
     maxWidth: 380,
     padding: 5,
     gap: 5,
-    borderRadius: 18,
-    backgroundColor: c.line,
+    borderRadius: 22,
+    ...glassStyles.control,
+    backgroundColor: "rgba(206,219,238,0.48)",
     marginBottom: 18,
   },
   productionTab: {
@@ -4309,7 +4247,8 @@ const s = StyleSheet.create({
     justifyContent: "center",
   },
   productionTabActive: {
-    backgroundColor: c.blue,
+    backgroundColor: c.surfaceStrong,
+    shadowColor: "#32547E", shadowOpacity: 0.12, shadowRadius: 6, shadowOffset: { width: 0, height: 2 }, elevation: 2,
   },
   productionTabText: {
     fontSize: 13,
@@ -4317,7 +4256,7 @@ const s = StyleSheet.create({
     textAlign: "center",
   },
 
-  modal: { flex: 1, backgroundColor: c.bg },
+  modal: { flex: 1, backgroundColor: c.surfaceStrong, borderTopLeftRadius: 28, borderTopRightRadius: 28, overflow: "hidden" },
   modalHead: {
     flexDirection: "row",
     alignItems: "center",
@@ -4340,12 +4279,10 @@ const s = StyleSheet.create({
     backgroundColor: c.white,
   },
   card: {
-    backgroundColor: c.white,
-    borderRadius: 20,
-    padding: 19,
-    borderWidth: 1,
-    borderColor: c.line,
-    marginBottom: 14,
+    ...glassStyles.card,
+    borderRadius: 26,
+    padding: 20,
+    marginBottom: 16,
   },
   title: {
     fontSize: 30,
@@ -4386,12 +4323,12 @@ const s = StyleSheet.create({
   buttonDisabled: { opacity: 0.4 },
   buttonText: { flexShrink: 1, color: "white", fontWeight: "700", fontSize: 13, lineHeight: 17, textAlign: "center" },
   input: {
-    backgroundColor: c.white,
+    backgroundColor: "rgba(255,255,255,0.88)",
     borderWidth: 1,
     borderColor: c.line,
-    borderRadius: 12,
-    paddingHorizontal: 13,
-    paddingVertical: 11,
+    borderRadius: 16,
+    paddingHorizontal: 15,
+    paddingVertical: 13,
     fontSize: 16,
     color: c.ink,
     minHeight: 46,
@@ -4411,13 +4348,12 @@ const s = StyleSheet.create({
   optionOn: { borderColor: c.blue, backgroundColor: c.softBlue },
   chips: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginVertical: 10 },
   chip: {
-    padding: 10,
-    borderRadius: 10,
-    backgroundColor: c.white,
-    borderWidth: 1,
-    borderColor: c.line,
+    ...glassStyles.control,
+    minHeight: 42, justifyContent: "center",
+    paddingVertical: 10, paddingHorizontal: 14,
+    borderRadius: 16,
   },
-  chipOn: { backgroundColor: c.softBlue, borderColor: c.blue },
+  chipOn: { backgroundColor: "#E2ECFF", borderColor: "#C6D8FA" },
   error: { color: "#B84040", fontSize: 14, lineHeight: 21, marginVertical: 12 },
   badge: {
     fontSize: 11,
@@ -4464,7 +4400,7 @@ function CatalogGroup({ title, items, waste = false, disabled, showEmpty, onAdd,
   </View>;
 }
 const catalogStyles = StyleSheet.create({
-  group: { backgroundColor: c.white, borderRadius: 18, borderWidth: 1, borderColor: c.line, overflow: "hidden" },
+  group: { ...glassStyles.card, borderRadius: 24, overflow: "hidden" },
   header: { flexDirection: "row", alignItems: "center", gap: 10, paddingLeft: 14, paddingRight: 8, paddingVertical: 10 },
   sectionIcon: { width: 34, height: 34, borderRadius: 11, alignItems: "center", justifyContent: "center", flexShrink: 0 },
   heading: { flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: 8 },

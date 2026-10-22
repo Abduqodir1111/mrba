@@ -1,3 +1,5 @@
+import { Collapsible } from "./collapsible";
+import { glassStyles } from "./glass-ui";
 import React, { useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
@@ -58,12 +60,12 @@ export function ProductionPeriodReport({ refreshKey, onActiveChange }: { refresh
       <View style={{ flex: 1 }}><Text style={styles.title}>{applied ? "Общий отчёт за период" : "Отчёт по завершённым плавкам"}</Text><Text style={styles.hint}>{applied ? `${date(applied.from)} — ${date(applied.to)}` : "Выберите период завершения"}</Text></View>
       <Ionicons name={expanded ? "chevron-up" : "options-outline"} size={21} color={c.blue} />
     </Pressable>
-    {expanded && <View style={styles.filters}>
+    <Collapsible open={expanded}><View style={styles.filters}>
       <Text style={styles.hint}>По времени завершения плавки · Ташкент. Последняя выбранная минута включается полностью.</Text>
       <Text style={styles.label}>С даты и времени</Text><DateTimeField label="Начало периода завершённых плавок" value={from} onChange={setFrom} />
       <Text style={styles.label}>По дату и время</Text><DateTimeField label="Конец периода завершённых плавок" value={to} onChange={setTo} />
       <Pressable accessibilityRole="button" onPress={apply} style={styles.apply}><Text style={styles.applyText}>Показать общий отчёт</Text></Pressable>
-    </View>}
+    </View></Collapsible>
     {!!error && <Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
     {busy && <ActivityIndicator style={{ margin: 16 }} color={c.blue} />}
     {!!report && <View style={styles.report}>
@@ -101,7 +103,7 @@ export function ProductionPeriodReport({ refreshKey, onActiveChange }: { refresh
   </View>;
 }
 const styles = StyleSheet.create({
-  card: { backgroundColor: c.white, borderRadius: 18, borderWidth: 1, borderColor: c.line, padding: 14, marginBottom: 16 },
+  card: { ...glassStyles.card, padding: 14, marginBottom: 16 },
   header: { flexDirection: "row", alignItems: "center", gap: 10, minHeight: 48 },
   icon: { width: 38, height: 38, borderRadius: 12, backgroundColor: c.softBlue, alignItems: "center", justifyContent: "center" },
   title: { color: c.ink, fontSize: 15, lineHeight: 21, fontWeight: "700" },

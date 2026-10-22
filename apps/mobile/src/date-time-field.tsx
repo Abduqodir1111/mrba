@@ -1,3 +1,4 @@
+import { glassStyles } from "./glass-ui";
 import React, {useState} from "react";
 import {Keyboard, Platform, Pressable, StyleSheet, Text, View} from "react-native";
 import DateTimePicker from "@react-native-community/datetimepicker";
@@ -45,7 +46,7 @@ export function DateTimeField({label,value,onChange}:{label:string;value:string;
   </View>;
 }
 const styles = StyleSheet.create({
-  field: {flexDirection:"row", alignItems:"center", justifyContent:"space-between", gap:8, borderWidth:1, borderColor:"#E5E9EC", borderRadius:12, padding:12, minHeight:46, backgroundColor:"#fff"},
+  field: {...glassStyles.control,flexDirection:"row", alignItems:"center", justifyContent:"space-between", gap:8, borderWidth:1, borderColor:"#E5E9EC", borderRadius:16, padding:13, minHeight:46, backgroundColor:"#fff"},
   value: {fontSize:14, color:"#182C3C", flexShrink:1}, placeholder: {color:"#7E8C96"},
   panel: {marginTop:8, borderWidth:1, borderColor:"#E5E9EC", borderRadius:12, padding:8, backgroundColor:"#fff"},
   hint: {fontSize:12, color:"#7E8C96", margin:4}, picker: {alignSelf:"stretch"},
