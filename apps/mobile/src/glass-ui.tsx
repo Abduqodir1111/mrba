@@ -43,9 +43,8 @@ export const glassStyles = StyleSheet.create({
     elevation: 2,
   },
   control: {
-    backgroundColor: "rgba(255,255,255,0.76)",
-    borderColor: "rgba(255,255,255,0.96)",
-    borderWidth: 1,
+    backgroundColor: c.control,
+    borderWidth: 0,
     shadowColor: "#31527D",
     shadowOpacity: 0.04,
     shadowRadius: 8,
@@ -239,7 +238,9 @@ export function GlassButton({
           secondary && styles.secondary,
           danger && styles.danger,
           hovered &&
-            !inactive && { borderColor: secondary ? "#A2BAE5" : "#6DA1FF" },
+            !inactive && (secondary && !danger
+              ? { backgroundColor: c.controlHover }
+              : { opacity: 0.92 }),
         ]}
       >
         <LinearGradient
@@ -248,7 +249,7 @@ export function GlassButton({
             danger
               ? ["#FFFFFFAA", "#FFF1F5AA"]
               : secondary
-                ? ["#FFFFFFCC", "#EDF3FF88"]
+                ? ["#FFFFFF12", "#FFFFFF00"]
                 : ["#ffffff24", "#ffffff00"]
           }
           style={[StyleSheet.absoluteFill, { borderRadius: 18 }]}
@@ -530,8 +531,8 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   secondary: {
-    backgroundColor: "rgba(255,255,255,0.72)",
-    borderColor: "rgba(255,255,255,0.95)",
+    backgroundColor: c.control,
+    borderWidth: 0,
     shadowOpacity: 0.04,
   },
   danger: {

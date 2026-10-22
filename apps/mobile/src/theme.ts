@@ -11,5 +11,7 @@ export const theme = {
   orange: "#BA793B",
   surface: "rgba(255,255,255,0.82)",
   surfaceStrong: "#F9FBFF",
+  control: "#E9EEF6",
+  controlHover: "#DFE7F3",
   glassBorder: "rgba(255,255,255,0.92)",
 };

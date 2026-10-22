@@ -1568,7 +1568,7 @@ export function Workspace({
               accessibilityRole="button" accessibilityLabel="Фильтры склада"
               accessibilityState={{ expanded: stockFiltersOpen }}
               onPress={() => { setStockFilterDraft({from:stockFrom,to:stockTo,supplier:stockSupplier,material:stockMaterial,report:stockReport}); setStockPeriodError(""); setStockFiltersOpen(true); }}
-              style={{ width:44,height:44,borderRadius:12,alignItems:"center",justifyContent:"center",backgroundColor:stockFrom || stockTo || stockSupplier || stockMaterial || stockReport !== "stock" ? c.softBlue : c.white }}>
+              style={{ width:44,height:44,borderRadius:12,alignItems:"center",justifyContent:"center",backgroundColor:stockFrom || stockTo || stockSupplier || stockMaterial || stockReport !== "stock" ? c.softBlue : c.control }}>
               <Ionicons name="options-outline" size={22} color={c.blue} />
               {!!(stockFrom || stockTo || stockSupplier || stockMaterial || stockReport !== "stock") && <View style={{position:"absolute",right:6,top:6,width:7,height:7,borderRadius:4,backgroundColor:c.blue}} />}
             </Pressable>}
@@ -4316,7 +4316,7 @@ const s = StyleSheet.create({
     borderWidth: 1,
     borderColor: c.blue,
   },
-  secondary: { backgroundColor: c.white, borderColor: "#C9D9F5" },
+  secondary: { backgroundColor: c.control, borderWidth: 0 },
   dangerButton: { backgroundColor: "#FFF4F4", borderColor: "#F1CACA" },
   buttonPressed: { opacity: 0.82, transform: [{ scale: 0.985 }] },
   buttonDisabled: { opacity: 0.4 },
@@ -4352,7 +4352,7 @@ const s = StyleSheet.create({
     paddingVertical: 10, paddingHorizontal: 14,
     borderRadius: 16,
   },
-  chipOn: { backgroundColor: "#E2ECFF", borderColor: "#C6D8FA" },
+  chipOn: { backgroundColor: "#DCE7FC" },
   error: { color: "#B84040", fontSize: 14, lineHeight: 21, marginVertical: 12 },
   badge: {
     fontSize: 11,
