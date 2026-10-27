@@ -2,6 +2,7 @@ import { AmbientBackground, GlassButton, GlassSurface, GlassModal as Modal, Glas
 import { MonthClosing } from "./src/month-closing";
 import { RawGroupCard } from "./src/raw-group-card";
 import { DateTimeField } from "./src/date-time-field";
+import { RecentReceipts, type RecentReceipt } from "./src/recent-receipts";
 import {
   KeyboardAwareScrollView,
   KeyboardProvider,
@@ -68,7 +69,7 @@ type Dashboard = {
   openPeriodStartedAt?: string | null;
   purchasePeriod?: { from: string; to: string };
   purchaseAmounts: { currency: string; amount: string; unpriced?: number }[];
-  recent: any[];
+  recent: RecentReceipt[];
 };
 const tabs: { label: Tab; icon: keyof typeof Ionicons.glyphMap }[] = [
   { label: "Главная", icon: "grid-outline" },
@@ -210,6 +211,7 @@ function FactoryApp() {
 
   const [purchasePeriod, setPurchasePeriod] = useState<{ from: string; to: string } | null>(null);
   const [purchasePeriodOpen, setPurchasePeriodOpen] = useState(false);
+  const [recentReceiptsOpen, setRecentReceiptsOpen] = useState(false);
   const [purchaseDraft, setPurchaseDraft] = useState({ from: "", to: "" });
   const purchaseQuery = purchasePeriod ? `?purchaseFrom=${encodeURIComponent(purchasePeriod.from)}&purchaseTo=${encodeURIComponent(purchasePeriod.to)}` : "";
 
@@ -221,6 +223,7 @@ function FactoryApp() {
     setMaterials([]);
     setSuppliers([]);
     setModal(null);
+    setRecentReceiptsOpen(false);
     setTab("Главная");
   }), []);
 
@@ -295,6 +298,7 @@ function FactoryApp() {
       setMaterials([]);
       setSuppliers([]);
       setAuthenticated(false);
+      setRecentReceiptsOpen(false);
       setTab("Главная");
       setError("");
     } catch (e) {
@@ -625,6 +629,11 @@ function FactoryApp() {
                 : data?.openPeriodStartedAt && data.purchasePeriod ? `Открытый период с ${new Date(data.purchasePeriod.from).toLocaleDateString("ru-RU", { timeZone: "Asia/Tashkent" })}` : "Текущий месяц"} · Каждая валюта учитывается отдельно
               {!!data?.purchaseAmounts.some((x) => x.unpriced) && " · Есть приходы без цены"}
             </Text>
+            <Pressable accessibilityRole="button" accessibilityLabel="Открыть последние приходы" disabled={!data} onPress={() => setRecentReceiptsOpen(true)} style={({ pressed }) => [s.recentButton, pressed && { backgroundColor: c.softBlue }]}>
+              <View style={s.recentIcon}><Icon name="receipt-outline" color={c.blue} size={21} /></View>
+              <Text style={s.recentTitle}>Последние приходы</Text>
+              <Icon name="chevron-forward" color={c.blue} size={19} />
+            </Pressable>
           </>
         )}
         {tab === "Склад" && (
@@ -810,6 +819,7 @@ function FactoryApp() {
         </View>
         </GlassSurface>
       </SafeAreaView>
+      {recentReceiptsOpen && <RecentReceipts receipts={data?.recent ?? []} onClose={() => setRecentReceiptsOpen(false)} />}
       {modal && (
         <EntryModal
           kind={modal}
@@ -1450,6 +1460,9 @@ const s = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
+  recentButton: { ...glassStyles.control, flexDirection: "row", alignItems: "center", gap: 12, minHeight: 62, padding: 14, borderRadius: 20, marginTop: 12, marginBottom: 16 },
+  recentIcon: { width: 36, height: 36, borderRadius: 12, backgroundColor: c.softBlue, alignItems: "center", justifyContent: "center" },
+  recentTitle: { flex: 1, color: c.ink, fontSize: 14, lineHeight: 21, fontWeight: "700" },
   rowTitle: { fontSize: 14, fontWeight: "600", color: c.ink },
   muted: { fontSize: 12, color: c.muted, lineHeight: 19 },
   updated: {

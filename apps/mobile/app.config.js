@@ -4,7 +4,12 @@ module.exports = ({ config }) => {
   if (release) validateReleaseApiUrl(process.env.EXPO_PUBLIC_API_URL);
   return {
     ...config,
-    plugins: [...(config.plugins ?? []), "@react-native-community/datetimepicker"],
+    plugins: [
+      ...(config.plugins ?? []),
+      "@react-native-community/datetimepicker",
+      // iOS 27 terminates apps using the legacy application lifecycle at launch.
+      ["expo-build-properties", { ios: { enableSceneSupport: true } }],
+    ],
     ios: {
       ...config.ios,
       buildNumber: config.ios?.buildNumber ?? "1",

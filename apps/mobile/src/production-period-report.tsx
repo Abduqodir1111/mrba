@@ -71,19 +71,16 @@ export function ProductionPeriodReport({ refreshKey, onActiveChange }: { refresh
     {!!report && <View style={styles.report}>
       <Row label="Завершено плавок" value={String(report.batchCount)} accent />
       {!report.batchCount && <Text style={styles.hint}>За выбранный период завершённых плавок нет.</Text>}
-      <Text style={styles.section}>Загрузка и стоимость</Text>
+      <Text style={styles.section}>Загрузка</Text>
       <Row label="Сырьё и отходы извне периода" value={kg(report.freshInputKg)} />
       <Row label="Остаток предыдущих смен, пришедший в период" value={kg(report.incomingCarryoverKg)} />
       <Row label="Всего без повторного учёта" value={kg(report.inputKg)} />
-      <Row label="Стоимость сырья и входящего остатка" value={money(report.inputCost)} />
       <Text style={styles.section}>Готовая продукция</Text>
       <Row label="Общий выпуск" value={kg(report.productKg)} accent />
-      <Row label="Стоимость выпуска" value={money(report.productCost)} />
       <Row label="Средняя себестоимость за кг" value={money(report.averageUnitCost)} accent />
       {report.products.map(product => <View key={product.id} style={styles.group}>
         <Row label={product.name} value={kg(product.quantityKg)} />
         <Row label="Себестоимость за кг" value={money(product.unitCost)} />
-        <Row label="Стоимость" value={money(product.cost)} />
       </View>)}
       <Text style={styles.section}>Отходы и потери</Text>
       <Row label="Получено отходов" value={`${kg(report.wasteKg)}${report.wastePercent !== null ? ` · ${number(report.wastePercent, 2)} %` : ""}`} />
@@ -95,9 +92,8 @@ export function ProductionPeriodReport({ refreshKey, onActiveChange }: { refresh
       <Row label="Безвозвратные потери" value={`${kg(report.lossKg)}${report.lossPercent !== null ? ` · ${number(report.lossPercent, 2)} %` : ""}`} />
       <Text style={styles.section}>Остаток за границей периода</Text>
       <Row label="Передано следующим сменам / возвращено на склад" value={kg(report.carryoverKg)} />
-      <Row label="Стоимость остатка" value={money(report.carryoverCost)} />
       {new Decimal(report.recoveryDifferenceKg).isZero() ? null : <Row label="Уточнение веса при извлечении из котла" value={kg(report.recoveryDifferenceKg)} />}
-      <Text style={styles.hint}>Передачи между плавками внутри отчёта не считаются новой загрузкой. Средняя себестоимость = стоимость выпуска ÷ вес выпуска. Проценты — от загрузки без повторов. UZS и USD учитываются отдельно.</Text>
+      <Text style={styles.hint}>Передачи между плавками внутри отчёта не считаются новой загрузкой. Проценты — от загрузки без повторов. Средняя себестоимость учитывает вес выпущенной продукции; UZS и USD считаются отдельно.</Text>
     </View>}
     {!!applied && <Pressable accessibilityRole="button" onPress={reset} style={styles.reset}><Ionicons name="list-outline" size={18} color={c.blue} /><Text style={styles.resetText}>Вернуться к отдельным плавкам</Text></Pressable>}
   </View>;
