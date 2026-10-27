@@ -6,7 +6,6 @@ import { theme as c } from "./theme";
 type Cost = { known: boolean; amounts: Record<string, string> };
 const number = (value: Decimal.Value) => new Decimal(value).toDecimalPlaces(2).toFixed().replace(".", ",").replace(/\B(?=(\d{3})+(?!\d))/g, " ");
 const money = (value?: Cost | null) => !value?.known ? "Не определена" : Object.entries(value.amounts).map(([currency, amount]) => `${number(amount)} ${currency}`).join(" + ") || "0";
-const scaled = (value: Cost | null, kg: Decimal): Cost | null => value && ({ known: value.known, amounts: Object.fromEntries(Object.entries(value.amounts).map(([currency, amount]) => [currency, new Decimal(amount).times(kg).toString()])) });
 
 export function CompletedMeltDetails({ batch }: { batch: any }) {
   const loaded = batch.inputs.reduce((sum: Decimal, input: any) => sum.plus(input.quantityKg), new Decimal(0));
@@ -14,7 +13,6 @@ export function CompletedMeltDetails({ batch }: { batch: any }) {
   const products = batch.outputs.filter((output: any) => output.lot.item.kind === "PRODUCT");
   const wasteKg = waste.reduce((sum: Decimal, output: any) => sum.plus(output.quantityKg), new Decimal(0));
   const wastePercent = loaded.gt(0) ? `${number(wasteKg.div(loaded).times(100))} %` : "—";
-  const productKg = products.reduce((sum: Decimal, output: any) => sum.plus(output.quantityKg), new Decimal(0));
   const currencies = [...new Set(batch.inputs.flatMap((input: any) => Object.keys(input.totalCost?.amounts ?? {})))] as string[];
   const tableMoney = (value?: Cost) => !value?.known ? "Не задана" : Object.entries(value.amounts).map(([currency, amount]) => `${number(amount)}${currencies.length > 1 ? ` ${currency}` : ""}`).join(" + ") || "0";
   const columnStyles = [styles.name, styles.weight, styles.price, styles.amount];
@@ -36,9 +34,7 @@ export function CompletedMeltDetails({ batch }: { batch: any }) {
     {detail("Себестоимость за кг", money(batch.unitCost))}
     <Text style={styles.heading}>Результат плавки</Text>
     {products.map((output: any) => <View key={output.id}>{detail(output.lot.item.name, `${number(output.quantityKg)} кг`)}</View>)}
-    {detail("Стоимость продукции", money(scaled(batch.unitCost, productKg)))}
     {detail(batch.carryoverRecovered ? "Возвращено на склад" : "Остаток следующей смены", `${number(batch.carryoverKg ?? 0)} кг`)}
-    {detail("Стоимость остатка", money(batch.carryoverValue))}
     <View style={styles.waste}>
       {detail("Отходы от загрузки", `${number(wasteKg)} кг · ${wastePercent}`, true)}
       {waste.map((output: any) => <View key={output.id}>{detail(output.lot.item.name, `${number(output.quantityKg)} кг`)}</View>)}
