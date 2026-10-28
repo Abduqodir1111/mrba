@@ -5,6 +5,7 @@ import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-nati
 import { Ionicons } from "@expo/vector-icons";
 import Decimal from "decimal.js";
 import { api } from "./api";
+import { loadKettleReports, type ReportKettle } from "./production-period-data";
 import { DateTimeField } from "./date-time-field";
 import { theme as c } from "./theme";
 
@@ -23,54 +24,59 @@ const money = (value: Cost | null) => !value ? "—" : !value.known ? "Стои�
 const date = (value: string) => `${value.slice(8, 10)}.${value.slice(5, 7)}.${value.slice(0, 4)} ${value.slice(11)}`;
 const Row = ({ label, value, accent = false }: { label: string; value: string; accent?: boolean }) => <View style={[styles.row, accent && styles.accent]}><Text style={styles.label}>{label}</Text><Text style={styles.value}>{value}</Text></View>;
 
-export function ProductionPeriodReport({ refreshKey, onActiveChange }: { refreshKey: number; onActiveChange: (active: boolean) => void }) {
+export function ProductionPeriodReport({ refreshKey, onActiveChange, equipment }: { refreshKey: number; onActiveChange: (active: boolean) => void; equipment: ReportKettle[] }) {
   const today = new Date(Date.now() + 5 * 3600000).toISOString().slice(0, 10);
   const [from, setFrom] = useState(`${today.slice(0, 7)}-01T00:00`);
   const [to, setTo] = useState(`${today}T23:59`);
   const [applied, setApplied] = useState<{ from: string; to: string } | null>(null);
   const [expanded, setExpanded] = useState(false);
-  const [report, setReport] = useState<Report | null>(null);
+  const [reports, setReports] = useState<{ equipment: ReportKettle; report: Report }[] | null>(null);
+  const equipmentKey = JSON.stringify(equipment.map(({ id, name }) => ({ id, name })));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => {
     if (!applied) return;
     let current = true;
-    setBusy(true); setError(""); setReport(null);
+    setBusy(true); setError(""); setReports(null);
     const start = new Date(`${applied.from}:00+05:00`).toISOString();
     const end = new Date(new Date(`${applied.to}:00+05:00`).getTime() + 60000).toISOString();
-    void api(`/reports/production-period?from=${encodeURIComponent(start)}&to=${encodeURIComponent(end)}`)
-      .then(result => { if (current) setReport(result); })
+    void loadKettleReports<Report>(JSON.parse(equipmentKey), `from=${encodeURIComponent(start)}&to=${encodeURIComponent(end)}`, path => api<Report>(path))
+      .then(result => { if (current) setReports(result); })
       .catch(e => { if (current) setError(e.message); })
       .finally(() => { if (current) setBusy(false); });
     return () => { current = false; };
-  }, [applied, refreshKey]);
+  }, [applied, refreshKey, equipmentKey]);
   function apply() {
     const start = new Date(`${from}:00+05:00`), end = new Date(`${to}:00+05:00`);
     if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || start > end) {
       setError("Выберите корректные даты: начало должно быть не позже окончания."); return;
     }
-    setError(""); setReport(null); setApplied({ from, to }); setExpanded(false); onActiveChange(true);
+    setError(""); setReports(null); setApplied({ from, to }); setExpanded(false); onActiveChange(true);
   }
   function reset() {
-    setApplied(null); setReport(null); setError(""); setBusy(false); setExpanded(false); onActiveChange(false);
+    setApplied(null); setReports(null); setError(""); setBusy(false); setExpanded(false); onActiveChange(false);
   }
   return <View style={styles.card}>
     <Pressable accessibilityRole="button" accessibilityLabel="Выбрать период завершённых плавок" accessibilityState={{ expanded }} onPress={() => setExpanded(!expanded)} style={styles.header}>
       <View style={styles.icon}><Ionicons name="calendar-outline" size={21} color={c.blue} /></View>
-      <View style={{ flex: 1 }}><Text style={styles.title}>{applied ? "Общий отчёт за период" : "Отчёт по завершённым плавкам"}</Text><Text style={styles.hint}>{applied ? `${date(applied.from)} — ${date(applied.to)}` : "Выберите период завершения"}</Text></View>
+      <View style={{ flex: 1 }}><Text style={styles.title}>{applied ? "Отчёты по котлам за период" : "Отчёты по завершённым плавкам"}</Text><Text style={styles.hint}>{applied ? `${date(applied.from)} — ${date(applied.to)}` : "Выберите период завершения"}</Text></View>
       <Ionicons name={expanded ? "chevron-up" : "options-outline"} size={21} color={c.blue} />
     </Pressable>
     <Collapsible open={expanded}><View style={styles.filters}>
       <Text style={styles.hint}>По времени завершения плавки · Ташкент. Последняя выбранная минута включается полностью.</Text>
       <Text style={styles.label}>С даты и времени</Text><DateTimeField label="Начало периода завершённых плавок" value={from} onChange={setFrom} />
       <Text style={styles.label}>По дату и время</Text><DateTimeField label="Конец периода завершённых плавок" value={to} onChange={setTo} />
-      <Pressable accessibilityRole="button" onPress={apply} style={styles.apply}><Text style={styles.applyText}>Показать общий отчёт</Text></Pressable>
+      <Pressable accessibilityRole="button" onPress={apply} style={styles.apply}><Text style={styles.applyText}>Показать отчёты по котлам</Text></Pressable>
     </View></Collapsible>
     {!!error && <Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
     {busy && <ActivityIndicator style={{ margin: 16 }} color={c.blue} />}
-    {!!report && <View style={styles.report}>
+    {reports?.length === 0 && <Text style={styles.hint}>За выбранный период завершённых плавок нет.</Text>}
+    {reports?.map(({ equipment: kettle, report }) => <View key={kettle.id} style={styles.kettleReport}>
+      <View style={styles.kettleHeader}>
+        <View style={styles.icon}><Ionicons name="flame-outline" size={22} color={c.blue} /></View>
+        <Text accessibilityRole="header" style={styles.kettleName}>{kettle.name}</Text>
+      </View>
       <Row label="Завершено плавок" value={String(report.batchCount)} accent />
-      {!report.batchCount && <Text style={styles.hint}>За выбранный период завершённых плавок нет.</Text>}
       <Text style={styles.section}>Загрузка и стоимость</Text>
       <Row label="Сырьё и отходы извне периода" value={kg(report.freshInputKg)} />
       <Row label="Остаток предыдущих смен, пришедший в период" value={kg(report.incomingCarryoverKg)} />
@@ -94,8 +100,8 @@ export function ProductionPeriodReport({ refreshKey, onActiveChange }: { refresh
       <Text style={styles.section}>Остаток за границей периода</Text>
       <Row label="Передано следующим сменам / возвращено на склад" value={kg(report.carryoverKg)} />
       {new Decimal(report.recoveryDifferenceKg).isZero() ? null : <Row label="Уточнение веса при извлечении из котла" value={kg(report.recoveryDifferenceKg)} />}
-      <Text style={styles.hint}>Передачи между плавками внутри отчёта не считаются новой загрузкой. Средняя себестоимость = стоимость выпуска ÷ вес выпуска. Проценты — от загрузки без повторов. UZS и USD учитываются отдельно.</Text>
-    </View>}
+      <Text style={styles.hint}>Передачи между плавками этого котла внутри отчёта не считаются новой загрузкой. Средняя себестоимость = стоимость выпуска ÷ вес выпуска. Проценты — от загрузки без повторов. UZS и USD учитываются отдельно.</Text>
+    </View>)}
     {!!applied && <Pressable accessibilityRole="button" onPress={reset} style={styles.reset}><Ionicons name="list-outline" size={18} color={c.blue} /><Text style={styles.resetText}>Вернуться к отдельным плавкам</Text></Pressable>}
   </View>;
 }
@@ -110,7 +116,9 @@ const styles = StyleSheet.create({
   value: { flex: 1, color: c.ink, textAlign: "right", fontSize: 13, lineHeight: 19, fontWeight: "600" },
   apply: { backgroundColor: c.blue, padding: 13, borderRadius: 12, alignItems: "center", marginTop: 5 },
   applyText: { color: c.white, fontWeight: "700", fontSize: 14 },
-  report: { marginTop: 14, gap: 3 },
+  kettleReport: { ...glassStyles.control, backgroundColor: c.bg, padding: 14, marginTop: 16, borderRadius: 20, gap: 3 },
+  kettleHeader: { flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 14 },
+  kettleName: { flex: 1, color: c.ink, fontSize: 17, lineHeight: 24, fontWeight: "700" },
   row: { flexDirection: "row", alignItems: "flex-start", gap: 12, paddingVertical: 8 },
   accent: { backgroundColor: c.softBlue, paddingHorizontal: 9, borderRadius: 10 },
   section: { color: c.ink, fontSize: 14, lineHeight: 20, fontWeight: "700", marginTop: 16, marginBottom: 5 },

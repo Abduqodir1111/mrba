@@ -1628,7 +1628,7 @@ export function Workspace({
               }
             />
           )}
-          {batchFilter === "COMPLETED" && <ProductionPeriodReport refreshKey={refreshKey} onActiveChange={setCompletedPeriodActive} />}
+          {batchFilter === "COMPLETED" && <ProductionPeriodReport refreshKey={refreshKey} onActiveChange={setCompletedPeriodActive} equipment={rows("equipment")} />}
           {!(batchFilter === "COMPLETED" && completedPeriodActive) && <>
           {!rows("batches").some((b) => (b.status === batchFilter || (batchFilter === "COMPLETED" && b.status === "RETURNED"))) && !busy && (
             <Empty
