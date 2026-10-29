@@ -84,7 +84,7 @@ export function ProductionPeriodReport({ refreshKey, onActiveChange, equipment }
       <Row label="Стоимость сырья и входящего остатка" value={money(report.inputCost)} />
       <Text style={styles.section}>Готовая продукция</Text>
       <Row label="Общий выпуск" value={kg(report.productKg)} accent />
-      <Row label="Средняя себестоимость за кг" value={money(report.averageUnitCost)} accent />
+      <Row label="Средняя себестоимость продукции и остатка за кг" value={money(report.averageUnitCost)} accent />
       {report.products.map(product => <View key={product.id} style={styles.group}>
         <Row label={product.name} value={kg(product.quantityKg)} />
         <Row label="Себестоимость за кг" value={money(product.unitCost)} />
@@ -100,7 +100,7 @@ export function ProductionPeriodReport({ refreshKey, onActiveChange, equipment }
       <Text style={styles.section}>Остаток за границей периода</Text>
       <Row label="Передано следующим сменам / возвращено на склад" value={kg(report.carryoverKg)} />
       {new Decimal(report.recoveryDifferenceKg).isZero() ? null : <Row label="Уточнение веса при извлечении из котла" value={kg(report.recoveryDifferenceKg)} />}
-      <Text style={styles.hint}>Передачи между плавками этого котла внутри отчёта не считаются новой загрузкой. Средняя себестоимость = стоимость выпуска ÷ вес выпуска. Проценты — от загрузки без повторов. UZS и USD учитываются отдельно.</Text>
+      <Text style={styles.hint}>Передачи между плавками этого котла внутри отчёта не считаются новой загрузкой. Средняя себестоимость = общая стоимость входящих материалов ÷ (вес продукции + переходящий остаток). Проценты — от загрузки без повторов. UZS и USD учитываются отдельно.</Text>
     </View>)}
     {!!applied && <Pressable accessibilityRole="button" onPress={reset} style={styles.reset}><Ionicons name="list-outline" size={18} color={c.blue} /><Text style={styles.resetText}>Вернуться к отдельным плавкам</Text></Pressable>}
   </View>;

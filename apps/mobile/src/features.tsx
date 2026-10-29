@@ -25,7 +25,7 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import Decimal from "decimal.js";
 import {
@@ -3062,25 +3062,27 @@ export function Workspace({
           />
         ))}
       {!!completedBatch && (
-        <Modal visible={!completedClosing} animationType="slide" onRequestClose={closeCompleted}>
-          <SafeAreaView style={s.modal}>
-            <View style={s.modalHead}>
-              <Text style={[s.section, { flex: 1, marginBottom: 0 }]}>Результат плавки</Text>
-              <Pressable accessibilityRole="button" accessibilityLabel="Закрыть результат плавки" onPress={() => closeCompleted()} style={s.modalClose}>
-                <Ionicons name="close" size={22} color={c.ink} />
-              </Pressable>
-            </View>
-            <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 32 }}>
-              <Card>
-                <Text style={[s.section, { marginTop: 0 }]}>{completedBatch.equipment.name}</Text>
-                <Text style={s.muted}>{completedBatch.number}</Text>
-                <Row label={completedBatch.shift.name} value={completedBatch.shift.businessDate} />
-                <Row label="Начало" value={date(completedBatch.startedAt)} />
-                <Row label="Завершение" value={date(completedBatch.completedAt)} />
-                <CompletedMeltDetails batch={completedBatch} />
-              </Card>
-            </ScrollView>
-          </SafeAreaView>
+        <Modal visible={!completedClosing} animationType="slide" presentationStyle="fullScreen" onRequestClose={closeCompleted}>
+          <SafeAreaProvider>
+            <SafeAreaView style={s.modal}>
+              <View style={s.modalHead}>
+                <Text style={[s.section, { flex: 1, marginBottom: 0 }]}>Результат плавки</Text>
+                <Pressable accessibilityRole="button" accessibilityLabel="Закрыть результат плавки" onPress={() => closeCompleted()} hitSlop={8} style={[s.modalClose, { minWidth: 44, minHeight: 44 }]}>
+                  <Ionicons name="close" size={22} color={c.ink} />
+                </Pressable>
+              </View>
+              <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 32 }}>
+                <Card>
+                  <Text style={[s.section, { marginTop: 0 }]}>{completedBatch.equipment.name}</Text>
+                  <Text style={s.muted}>{completedBatch.number}</Text>
+                  <Row label={completedBatch.shift.name} value={completedBatch.shift.businessDate} />
+                  <Row label="Начало" value={date(completedBatch.startedAt)} />
+                  <Row label="Завершение" value={date(completedBatch.completedAt)} />
+                  <CompletedMeltDetails batch={completedBatch} />
+                </Card>
+              </ScrollView>
+            </SafeAreaView>
+          </SafeAreaProvider>
         </Modal>
       )}
       {form && (

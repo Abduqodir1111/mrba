@@ -1,4 +1,4 @@
-import { Costing, addCosts, scaleCost } from "./costing";
+import { Costing, addCosts, scaleCost, productionPeriodAverage } from "./costing";
 import { effectivePurchase, revisionInclude } from "./purchase-values";
 import { page, PageQuery } from "./pagination";
 import {
@@ -89,7 +89,7 @@ export class ReportsController {
         inputKg: inputKg.toString(), freshInputKg: inputKg.minus(incomingCarryoverKg).toString(), incomingCarryoverKg: incomingCarryoverKg.toString(), grossLoadedKg: grossLoadedKg.toString(),
         productKg: productKg.toString(), wasteKg: wasteKg.toString(), reusedWasteKg: reusedWasteKg.toString(), netWasteKg: wasteKg.minus(reusedWasteKg).toString(),
         wastePercent: percent(wasteKg), lossKg: lossKg.toString(), lossPercent: percent(lossKg), carryoverKg: carryoverKg.toString(), recoveryDifferenceKg: recoveryDifferenceKg.toString(),
-        inputCost, productCost, averageUnitCost: average(productCost, productKg), carryoverCost: addCosts(carryValues),
+        inputCost, productCost, averageUnitCost: productionPeriodAverage(inputCost, productKg, carryoverKg), carryoverCost: addCosts(carryValues),
         products: [...products.values()].map(row => { const cost = addCosts(row.values); return { id: row.id, name: row.name, quantityKg: row.quantityKg.toString(), cost, unitCost: average(cost, row.quantityKg) }; }),
         wastes: [...wastes.values()].map(row => ({ ...row, quantityKg: row.quantityKg.toString() })),
       };

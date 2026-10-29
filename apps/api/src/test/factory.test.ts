@@ -2164,6 +2164,7 @@ test("completed production period totals use weighted costs and exclude internal
   const outgoing = (await read(start, after.completedAt!.toISOString()).expect(200)).body;
   assert.equal(outgoing.batchCount, 1);
   assert.equal(outgoing.carryoverKg, "3.5");
+  assert.equal(new Prisma.Decimal(outgoing.averageUnitCost.amounts.UZS).toFixed(6), "117.647059");
   const incoming = (await read(after.completedAt!.toISOString(), end).expect(200)).body;
   assert.equal(incoming.batchCount, 1);
   assert.equal(incoming.inputKg, "5.5");

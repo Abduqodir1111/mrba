@@ -28,6 +28,12 @@ export function addCosts(values: Valuation[]): Valuation {
   return { known: values.every((v) => v.known), amounts };
 }
 
+// Period display metric; does not revalue individual batches or stock lots.
+export function productionPeriodAverage(value: Valuation, productKg: Prisma.Decimal.Value, carryoverKg: Prisma.Decimal.Value): Valuation | null {
+  const weight = new Prisma.Decimal(productKg).plus(carryoverKg);
+  return weight.gt(0) ? scaleCost(value, new Prisma.Decimal(1).div(weight)) : null;
+}
+
 // Original receipts, revisions and transformation edges are immutable. Derive
 // current valuation from the latest revision, including downstream production.
 // Never combine currencies or treat an unpriced receipt as a known zero cost.
