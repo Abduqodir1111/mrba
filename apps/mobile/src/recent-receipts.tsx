@@ -1,6 +1,6 @@
 import React from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import Decimal from "decimal.js";
 import { GlassModal, glassStyles, useModalDismiss } from "./glass-ui";
@@ -20,13 +20,14 @@ export function RecentReceipts({ receipts, onClose }: { receipts: RecentReceipt[
   const { closing, dismiss } = useModalDismiss();
   const close = () => dismiss(onClose);
   return <GlassModal visible={!closing} animationType="slide" onRequestClose={close}>
+    <SafeAreaProvider>
     <SafeAreaView style={styles.page}>
       <View style={styles.header}>
         <View style={{ flex: 1 }}>
           <Text style={styles.title}>Последние приходы</Text>
           <Text style={styles.hint}>Последние 5 поступлений · время Ташкента</Text>
         </View>
-        <Pressable accessibilityRole="button" accessibilityLabel="Закрыть последние приходы" onPress={close} style={styles.close}>
+        <Pressable accessibilityRole="button" accessibilityLabel="Закрыть последние приходы" onPress={close} hitSlop={8} style={styles.close}>
           <Ionicons name="close" size={23} color={c.ink} />
         </Pressable>
       </View>
@@ -56,14 +57,15 @@ export function RecentReceipts({ receipts, onClose }: { receipts: RecentReceipt[
         </View>)}
       </ScrollView>
     </SafeAreaView>
+    </SafeAreaProvider>
   </GlassModal>;
 }
 const styles = StyleSheet.create({
   page: { flex: 1, backgroundColor: c.bg },
-  header: { flexDirection: "row", alignItems: "center", gap: 12, padding: 18 },
+  header: { flexDirection: "row", alignItems: "center", gap: 12, padding: 18, paddingTop: 34 },
   title: { color: c.ink, fontSize: 19, lineHeight: 26, fontWeight: "700" },
   hint: { color: c.muted, fontSize: 12, lineHeight: 18, marginTop: 4 },
-  close: { width: 42, height: 42, borderRadius: 21, backgroundColor: c.control, alignItems: "center", justifyContent: "center" },
+  close: { width: 48, height: 48, borderRadius: 24, backgroundColor: c.control, alignItems: "center", justifyContent: "center" },
   content: { padding: 16, paddingTop: 0, paddingBottom: 32, gap: 12 },
   card: { ...glassStyles.card, padding: 16 },
   cardHeader: { flexDirection: "row", justifyContent: "space-between", gap: 12, marginBottom: 12 },

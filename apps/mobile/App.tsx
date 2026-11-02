@@ -455,6 +455,11 @@ function FactoryApp() {
         <ScreenTransition transitionKey={`${tab}:${moreView}`} style={{ gap: 16 }}>
         {tab === "Главная" && (
           <>
+            <Pressable accessibilityRole="button" accessibilityLabel="Открыть последние приходы" disabled={!data} onPress={() => setRecentReceiptsOpen(true)} style={({ pressed }) => [s.recentButton, pressed && { backgroundColor: c.softBlue }]}>
+              <View style={s.recentIcon}><Icon name="receipt-outline" color={c.blue} size={21} /></View>
+              <Text style={s.recentTitle}>Последние приходы</Text>
+              <Icon name="chevron-forward" color={c.blue} size={19} />
+            </Pressable>
             {data?.openingPending&&<View style={[s.currencyCard,{padding:16,marginBottom:16}]}><Text style={s.rowTitle}>Нужен пересчёт складов</Text><Text style={s.footnote}>Месяц закрыт, склады обнулены. Введите фактические остатки: «Ещё → Закрытие месяца».</Text></View>}
             <View style={[s.currencyCard, { padding: 20, gap: 16 }]}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 9 }}>
@@ -629,11 +634,7 @@ function FactoryApp() {
                 : data?.openPeriodStartedAt && data.purchasePeriod ? `Открытый период с ${new Date(data.purchasePeriod.from).toLocaleDateString("ru-RU", { timeZone: "Asia/Tashkent" })}` : "Текущий месяц"} · Каждая валюта учитывается отдельно
               {!!data?.purchaseAmounts.some((x) => x.unpriced) && " · Есть приходы без цены"}
             </Text>
-            <Pressable accessibilityRole="button" accessibilityLabel="Открыть последние приходы" disabled={!data} onPress={() => setRecentReceiptsOpen(true)} style={({ pressed }) => [s.recentButton, pressed && { backgroundColor: c.softBlue }]}>
-              <View style={s.recentIcon}><Icon name="receipt-outline" color={c.blue} size={21} /></View>
-              <Text style={s.recentTitle}>Последние приходы</Text>
-              <Icon name="chevron-forward" color={c.blue} size={19} />
-            </Pressable>
+
           </>
         )}
         {tab === "Склад" && (
