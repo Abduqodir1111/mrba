@@ -10,6 +10,7 @@ CREATE ROLE mrba_backup LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION 
 GRANT pg_read_all_data TO mrba_backup;
 DO $$ DECLARE r record; BEGIN
  EXECUTE format('ALTER DATABASE %I OWNER TO mrba_owner',current_database());
+ EXECUTE format('GRANT CONNECT ON DATABASE %I TO mrba_backup',current_database());
  FOR r IN SELECT c.relname,c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind IN ('r','p','S','v','m') LOOP
   EXECUTE format('ALTER %s public.%I OWNER TO mrba_owner', CASE r.relkind WHEN 'S' THEN 'SEQUENCE' WHEN 'v' THEN 'VIEW' WHEN 'm' THEN 'MATERIALIZED VIEW' ELSE 'TABLE' END,r.relname);
  END LOOP;
