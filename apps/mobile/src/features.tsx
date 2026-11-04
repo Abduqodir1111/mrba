@@ -1082,6 +1082,7 @@ function ReceiptHistory({ lines, search, edit, summary }: { lines: any[]; search
     group.push(line);
     groups.set(line.receiptId, group);
   }
+  for (const group of groups.values()) group.sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
   const query = search.trim().toLocaleLowerCase();
   const matching = [...groups.values()].filter(group => group.some(line =>
     `Приход №${line.number} ${line.material.name} ${line.supplierName ?? ""}`.toLocaleLowerCase().includes(query)

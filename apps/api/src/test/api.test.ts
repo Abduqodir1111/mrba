@@ -144,6 +144,20 @@ test("receipt numbers are consecutive across parallel multi-receipts and stable 
   assert.deepEqual(history.body.items.map((l: any) => l.number), receipts.flatMap(r => [r.number, r.number]).reverse());
 });
 
+test("receipt history retains entered material order across paginated reads", async () => {
+  const marker = randomUUID();
+  const names = [`Z ${marker}`, `A ${marker}`, `M ${marker}`];
+  const result = await request(app.getHttpServer()).post("/api/v1/purchase-receipts").set(headers()).set("Idempotency-Key", randomUUID())
+    .send({ currency: "UZS", lines: names.map(materialName => ({ materialName, quantity: "2.5", unit: "kg" })) }).expect(201);
+  const stored = await db.purchaseLine.findMany({ where: { receiptId: result.body.id }, orderBy: { position: "asc" }, include: { material: true } });
+  assert.deepEqual(stored.map(line => line.position), [0, 1, 2]);
+  assert.deepEqual(stored.map(line => line.material.name), names);
+  const history = await request(app.getHttpServer()).get("/api/v1/purchase-lines?limit=2").set(headers()).expect(200);
+  assert.deepEqual(history.body.items.map((line: any) => line.material.name), names.slice(0, 2));
+  const next = await request(app.getHttpServer()).get(`/api/v1/purchase-lines?limit=2&cursor=${history.body.nextCursor}`).set(headers()).expect(200);
+  assert.equal(next.body.items[0].material.name, names[2]);
+});
+
 test("receipt creates reusable supplier and material atomically without case duplicates", async () => {
   const supplierName = `New supplier ${randomUUID()}`;
   const materialName = `New material ${randomUUID()}`;

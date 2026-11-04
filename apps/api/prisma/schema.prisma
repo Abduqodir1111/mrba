@@ -149,6 +149,7 @@ model PurchaseNumberCounter {
   lastNumber Int
 }
 model PurchaseLine {
+  position Int @default(0)
   supplierName String?
   priceKnown Boolean @default(true)
   revisions PurchaseRevision[]

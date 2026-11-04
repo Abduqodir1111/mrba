@@ -49,8 +49,8 @@ export function RawGroupCard({ category, name, quantityKg, refreshKey }: { categ
     </View>
     {!period ? <>
       <Text style={s.label}>Текущий остаток</Text>
-      <Text style={s.weight}>{quantityKg !== undefined ? `${fmt(new Decimal(quantityKg).div(1000).toString())} т` : "—"}</Text>
-      <Text style={s.label}>{quantityKg !== undefined ? `${fmt(quantityKg)} кг` : "Загрузка"}</Text>
+      <Text style={s.weight}>{quantityKg !== undefined ? `${fmt(quantityKg)} кг` : "—"}</Text>
+      <Text style={s.label}>{quantityKg !== undefined ? `${fmt(new Decimal(quantityKg).div(1000).toString())} т` : "Загрузка"}</Text>
     </> : <>
       <Text style={s.dates}>{periodLabel(period.from)} — {periodLabel(period.to)}</Text>
       {busy ? <ActivityIndicator color={color} /> : error ? <Pressable onPress={() => setRetry(n=>n+1)}><Text style={{ color: "#B33E35" }}>{error} · Повторить</Text></Pressable> : summary && <>

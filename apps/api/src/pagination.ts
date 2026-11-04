@@ -23,43 +23,28 @@ export async function page(
   searchField?: string,
 ) {
   const limit = q.limit ?? 50;
-  const primary = Array.isArray(args.orderBy)
-    ? args.orderBy[0]
-    : (args.orderBy ?? { id: "desc" });
-  const field = Object.keys(primary)[0];
-  const relation = typeof primary[field] === "object";
-  const nested = relation ? Object.keys(primary[field])[0] : null;
-  const direction = relation ? primary[field][nested!] : primary[field];
-  const comparison = direction === "asc" ? "gt" : "lt";
+  const ordering = Array.isArray(args.orderBy) ? [...args.orderBy] : [args.orderBy ?? { id: "desc" }];
+  if (!ordering.some((entry: any) => "id" in entry)) ordering.push({ id: "desc" });
+  const fields = ordering.map((entry: any) => {
+    const field = Object.keys(entry)[0];
+    const nested = typeof entry[field] === "object" ? Object.keys(entry[field])[0] : null;
+    return { field, nested, direction: nested ? entry[field][nested] : entry[field] };
+  });
   let boundary: any = {};
   if (q.cursor) {
-    if (field === "id") boundary = { id: { [comparison]: q.cursor } };
-    else {
-      const cursor = await model.findUnique({
-        where: { id: q.cursor },
-        ...(relation
-          ? { include: { [field]: { select: { [nested!]: true } } } }
-          : {}),
-      });
-      if (!cursor)
-        throw new ConflictException(
-          "Позиция списка недоступна. Обновите список.",
-        );
-      const value = relation ? cursor[field][nested!] : cursor[field];
-      boundary = {
-        OR: [
-          relation
-            ? { [field]: { [nested!]: { [comparison]: value } } }
-            : { [field]: { [comparison]: value } },
-          {
-            ...(relation
-              ? { [field]: { [nested!]: value } }
-              : { [field]: value }),
-            id: { lt: q.cursor },
-          },
-        ],
-      };
-    }
+    const include: any = {};
+    for (const f of fields) if (f.nested) include[f.field] = { select: { ...include[f.field]?.select, [f.nested]: true } };
+    const cursor = await model.findUnique({ where: { id: q.cursor }, ...(Object.keys(include).length ? { include } : {}) });
+    if (!cursor) throw new ConflictException("Позиция списка недоступна. Обновите список.");
+    const condition = (f: any, comparison?: string) => {
+      const value = f.nested ? cursor[f.field][f.nested] : cursor[f.field];
+      const filter = comparison ? { [comparison]: value } : value;
+      return f.nested ? { [f.field]: { [f.nested]: filter } } : { [f.field]: filter };
+    };
+    boundary = { OR: fields.map((f: any, i: number) => ({ AND: [
+      ...fields.slice(0, i).map((previous: any) => condition(previous)),
+      condition(f, f.direction === "asc" ? "gt" : "lt"),
+    ] })) };
   }
   const where = {
     AND: [
@@ -74,7 +59,7 @@ export async function page(
     ...args,
     where,
     take: limit + 1,
-    orderBy: field === "id" ? primary : [primary, { id: "desc" }],
+    orderBy: ordering,
   });
   return {
     items: records.slice(0, limit),

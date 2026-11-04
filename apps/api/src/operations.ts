@@ -227,7 +227,7 @@ export class OperationsService {
             supplierId: supplier?.id,
           },
         });
-        for (const row of dto.lines) {
+        for (const [position, row] of dto.lines.entries()) {
           if (Boolean(row.materialId) === Boolean(row.materialName))
             throw new ConflictException(
               "Выберите сырьё или укажите новое название",
@@ -277,6 +277,7 @@ export class OperationsService {
           const line = await tx.purchaseLine.create({
             data: {
               receiptId: receipt.id,
+              position,
               supplierName: row.supplierName?.trim() || supplier?.name || null,
               priceKnown: row.unitPricePerKg !== undefined,
               materialId: materialId!,
@@ -432,7 +433,7 @@ export class OperationsController {
             },
             take: 5,
             orderBy: [{ postedAt: "desc" }, { id: "desc" }],
-            include: { supplier: true, lines: { include: { material: true, revisions: revisionInclude } } },
+            include: { supplier: true, lines: { orderBy: [{ position: "asc" }, { id: "asc" }], include: { material: true, revisions: revisionInclude } } },
           })).map((receipt) => ({ ...receipt, lines: receipt.lines.map(effectivePurchase) })),
         };
       },
@@ -528,7 +529,7 @@ export class OperationsController {
   }
   @Get("purchase-lines") @Allow("inventory.read") async purchaseHistory(@Query() q: PageQuery) {
     const result = await page(this.db.purchaseLine, {
-      orderBy: { receipt: { number: "desc" } },
+      orderBy: [{ receipt: { number: "desc" } }, { position: "asc" }, { id: "asc" }],
       include: { material: true, receipt: { include: { supplier: true } }, revisions: revisionInclude,
         lot: { include: { stockLot: { include: { originDocument: true } } } } },
     }, q);

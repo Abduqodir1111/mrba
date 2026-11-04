@@ -2,7 +2,7 @@
   "expo": {
     "name": "MRBA",
     "slug": "mrba",
-    "version": "1.0.10",
+    "version": "1.0.11",
     "orientation": "portrait",
     "icon": "./assets/mrba-icon.png",
     "userInterfaceStyle": "light",
@@ -15,7 +15,7 @@
         },
         "ITSAppUsesNonExemptEncryption": false
       },
-      "buildNumber": "22"
+      "buildNumber": "23"
     },
     "android": {
       "predictiveBackGestureEnabled": false,
