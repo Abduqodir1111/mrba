@@ -1,0 +1,14 @@
+[Unit]
+Description=MRBA health and backup monitoring
+After=network-online.target docker.service
+Wants=network-online.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/mrba-monitor
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/mrba-monitor
+TimeoutStartSec=180

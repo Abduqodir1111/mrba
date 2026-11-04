@@ -3,6 +3,9 @@ services:
   postgres:
     image: postgres:18.3-alpine@sha256:54451ecb8ab38c24c3ec123f2fd501303a3a1856a5c66e98cecf2460d5e1e9d7
     restart: unless-stopped
+    mem_limit: 512m
+    mem_reservation: 64m
+    pids_limit: 128
     environment:
       POSTGRES_DB: mrba
       POSTGRES_USER: mrba_owner
@@ -34,6 +37,9 @@ services:
       dockerfile: deploy/Dockerfile
       target: runtime
     restart: unless-stopped
+    mem_limit: 384m
+    mem_reservation: 128m
+    pids_limit: 128
     environment:
       NODE_ENV: production
       HOST: 0.0.0.0
