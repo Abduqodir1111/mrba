@@ -299,6 +299,7 @@ class OutputDto {
   @Transform(({ value }) => typeof value === "string" ? value.trim().replace(",", ".") : value) @IsString() @Matches(/^\d{1,12}(?:\.\d{1,3})?$/) quantityKg!: string;
 }
 class CompleteDto extends VersionDto {
+  @IsOptional() @IsUUID() productLocationId?: string;
   @IsOptional() @Transform(({ value }) => typeof value === "string" ? value.trim().replace(",", ".") : value) @IsString() @Matches(/^\d{1,12}(?:\.\d{1,3})?$/) lossKg?: string;
   @IsOptional() @IsBoolean() handover?: boolean;
   @IsOptional() @IsBoolean() automaticShift?: boolean;
@@ -534,6 +535,10 @@ export class FactoryService {
           rawStorage && salesStorage,
           "Не настроены склады сырья и продажи",
         );
+        const productStorage = dto.productLocationId
+          ? await tx.stockLocation.findFirst({ where: { id: dto.productLocationId, kind: "STORAGE", warehouse: { siteId: sourceLocation.warehouse.siteId } } })
+          : salesStorage;
+        ensure(productStorage, "Выберите склад готовой продукции этого завода");
         const inputs = await tx.inventoryBalance.findMany({
           where: { locationId: batch.wipLocationId, onHandKg: { gt: 0 } },
         });
@@ -704,9 +709,8 @@ export class FactoryService {
             tx,
             id,
             lot.id,
-            out.kind === "PRODUCT" || out.wasteDisposition === "SALE"
-              ? salesStorage.id
-              : rawStorage.id,
+            out.kind === "PRODUCT" ? productStorage.id
+              : out.wasteDisposition === "SALE" ? salesStorage.id : rawStorage.id,
             out.quantityKg,
             out.kind === "WASTE" ? "WASTE_RECEIPT" : "PRODUCT_RECEIPT",
           );

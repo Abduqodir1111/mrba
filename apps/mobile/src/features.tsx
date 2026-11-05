@@ -1,3 +1,4 @@
+import { completionProducts } from "./completion-products";
 import { cachedView, cacheView, invalidateApiCache, apiCacheRevision } from "./api";
 import { GlassSegments, GlassButton, GlassSurface, GlassModal as Modal, glassStyles, ScreenTransition, useModalDismiss } from "./glass-ui";
 import { saleReportRows, type ReportSale } from "./sales-report-data";
@@ -355,6 +356,10 @@ function Editor({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [rowCount, setRowCount] = useState(form.repeat?.minimum ?? 1);
+  const productOptions = form.fields.find(f => f.key === "productId")?.options ?? [];
+  const [products, setProducts] = useState([{ key: 0, itemId: values.productId ?? "", quantity: "" }]);
+  const nextProductKey = React.useRef(1);
+  const updateProduct = (key: number, change: Partial<{itemId:string;quantity:string}>) => setProducts(old => old.map(p => p.key === key ? {...p,...change} : p));
   let receiptFieldNumber = 0;
   const repeated = form.repeat
     ? Array.from({ length: rowCount }, (_, i) =>
@@ -367,7 +372,7 @@ function Editor({
         })),
       ).flat()
     : [];
-  const fields = [...form.fields, ...repeated].filter(
+  const fields = [...form.fields.filter(f => !form.allowHandover || !["productId", "productQuantityKg"].includes(f.key)), ...repeated].filter(
     (f) =>
       f.editableComment ||
       !["reason", "notes"].includes(f.key.split(".").at(-1) ?? ""),
@@ -400,9 +405,9 @@ function Editor({
     },
     new Decimal(0),
   );
-  const finishedProductKg = enteredWeight(values.productQuantityKg)?.times(
-    weightUnit === "t" ? 1000 : 1,
-  );
+  const finishedProductKg = form.allowHandover
+    ? products.reduce<Decimal | null>((sum, product) => { const weight=enteredWeight(product.quantity); return sum && weight ? sum.plus(weight.times(weightUnit === "t" ? 1000 : 1)) : null; }, new Decimal(0))
+    : enteredWeight(values.productQuantityKg)?.times(weightUnit === "t" ? 1000 : 1);
   const actualLossKg =
     loadedKg && wasteTotal && finishedProductKg
       ? loadedKg.minus(wasteTotal).minus(finishedProductKg)
@@ -463,6 +468,9 @@ function Editor({
         );
       const v: Record<string, string> = { ...values };
       if (form.allowHandover) {
+        v._products = JSON.stringify(completionProducts(products, weightUnit, productOptions.map(p=>p.id)));
+        v.carryoverItemId = values.carryoverItemId || products.find(p=>p.itemId)?.itemId || "";
+        if (carryoverKg?.gt(0) && !productOptions.some(p=>p.id===v.carryoverItemId)) throw Error("Выберите металл, оставшийся в котле");
         v._handover = String(handover);
         if (handover) {
           if (!estimatedLossKg || estimatedLossKg.decimalPlaces() > 3)
@@ -568,7 +576,7 @@ function Editor({
                   {form.subtitle}
                 </Text>
               )}
-              {fields.some((f) => f.weight) && (
+              {(form.allowHandover || fields.some((f) => f.weight)) && (
                 <View style={s.chips}>
                   {(["kg", "t"] as const).map((u) => (
                     <Pressable
@@ -585,6 +593,22 @@ function Editor({
                   ))}
                 </View>
               )}
+              {form.allowHandover && <View style={{gap:12,marginBottom:18}}>
+                <Text style={s.section}>Готовая продукция</Text>
+                {products.map((product,index)=><View key={product.key} style={{padding:14,borderRadius:16,backgroundColor:c.control,gap:10}}>
+                  <View style={{flexDirection:"row",alignItems:"center",justifyContent:"space-between"}}>
+                    <Text style={s.label}>Продукция {index+1}</Text>
+                    {products.length>1 && <Pressable accessibilityRole="button" accessibilityLabel={`Удалить продукцию ${index+1}`} disabled={busy} onPress={()=>setProducts(old=>old.filter(p=>p.key!==product.key))} style={{padding:10}}><Ionicons name="trash-outline" size={20} color={c.muted}/></Pressable>}
+                  </View>
+                  <MaterialDropdown options={productOptions} value={product.itemId} label={`Вид продукции ${index+1}`} disabled={busy} onChange={itemId=>updateProduct(product.key,{itemId})}/>
+                  <Text style={s.label}>Вес · {weightUnit==="kg"?"кг":"т"}</Text>
+                  <TextInput accessibilityLabel={`Вес продукции ${index+1}`} style={s.input} keyboardType="decimal-pad" value={product.quantity} editable={!busy} placeholder="0" placeholderTextColor={c.muted} onChangeText={quantity=>updateProduct(product.key,{quantity})}/>
+                </View>)}
+                <Btn secondary title="Добавить продукцию" disabled={busy || products.length>=20} onPress={()=>setProducts(old=>[...old,{key:nextProductKey.current++,itemId:"",quantity:""}])}/>
+                <Row label="Всего готовой продукции" value={finishedProductKg?`${fmt(finishedProductKg)} кг`:"—"}/>
+                <Row label="Остаток после продукции и отходов" value={actualLossKg?`${fmt(actualLossKg)} кг`:"—"}/>
+                {!!carryoverKg?.gt(0) && <><Text style={s.label}>Металл, оставшийся в котле</Text><MaterialDropdown options={productOptions} value={values.carryoverItemId || products.find(p=>p.itemId)?.itemId || ""} label="Металл остатка" disabled={busy} onChange={carryoverItemId=>setValues(old=>({...old,carryoverItemId}))}/></>}
+              </View>}
               {fieldGroups.map((section) => <View key={section.key} style={section.title ? {
                 backgroundColor: c.white, borderWidth: 1, borderColor: c.line,
                 borderRadius: 18, padding: 14, marginBottom: 18,
@@ -1804,6 +1828,8 @@ export function Workspace({
                               "productQuantityKg",
                               "Вес готовой продукции",
                             ),
+                            { ...opt("productLocationId", "Склад готовой продукции", options(storage)), dropdown: true,
+                              value: storage.find(l => l.name === "Склад для продажи")?.id ?? storage[0]?.id },
                           ],
                           wasteOptions: options(
                             rows("items").filter(
@@ -1822,23 +1848,17 @@ export function Workspace({
                             return send(`/batches/${b.id}/complete`, {
                               version: b.version,
                               locationId: mainStorage.id,
+                              productLocationId: v.productLocationId,
                               automaticShift: true,
                               handover: true,
                               ...(v._handover === "true"
                                 ? {
-                                    carryoverItemId: v.productId,
+                                    carryoverItemId: v.carryoverItemId,
                                     lossKg: v.lossKg,
                                   }
                                 : {}),
                               outputs: [
-                                ...(new Decimal(v.productQuantityKg).gt(0)
-                                  ? [
-                                      {
-                                        itemId: v.productId,
-                                        quantityKg: v.productQuantityKg,
-                                      },
-                                    ]
-                                  : []),
+                                ...JSON.parse(v._products),
                                 ...JSON.parse(v._waste),
                               ],
                             });

@@ -2272,3 +2272,29 @@ test("direct waste sale consumes available waste across warehouses, protects res
   assert.equal((await db.inventoryBalance.aggregate({ where: { lot: { itemId } }, _sum: { onHandKg: true } }))._sum.onHandKg?.toString(), "3.75");
   await post(`/reservations/${reserved.id}/release`, { reason: "Release test waste" });
 });
+
+
+test("completion sends products to chosen storage and keeps waste routing", async () => {
+  const raw = (await post("/materials", {name: `Storage test ${randomUUID()}`})).body.id;
+  const eq = (await post("/equipment", {name: `Storage furnace ${randomUUID()}`, direction: "COPPER"})).body.id;
+  await post("/purchase-receipts", {currency:"UZS",lines:[{materialId:raw,quantity:"100",unit:"kg",unitPricePerKg:"1"}]});
+  const b = (await post("/batches", {equipmentId:eq})).body;
+  await post("/inventory/transfer", {itemId:raw,locationId:location,destinationId:b.wipLocationId,quantityKg:"100",reason:"Test"});
+  const secondProduct = (await post("/items", {name:`Second product ${randomUUID()}`,kind:"PRODUCT"})).body.id;
+  const saleWaste = (await post("/items", {name:`Sale waste ${randomUUID()}`,kind:"WASTE",wasteDisposition:"SALE"})).body.id;
+  const payload = {version:1,handover:true,carryoverItemId:secondProduct,lossKg:"0",locationId:location,productLocationId:b.wipLocationId,outputs:[{itemId:product,quantityKg:"40"},{itemId:secondProduct,quantityKg:"40"},{itemId:waste,quantityKg:"5"},{itemId:saleWaste,quantityKg:"5"}]};
+  await post(`/batches/${b.id}/complete`,payload,randomUUID(),409);
+  const result = await post(`/batches/${b.id}/complete`, {...payload,productLocationId:location});
+  const lots=await db.stockLot.findMany({where:{originDocumentId:result.body.id},include:{balances:true}});
+  const productOutput=lots.find(l=>l.itemId===product && !l.isCarryover)!;
+  assert.equal(productOutput.balances[0].locationId,location);
+  assert.equal(productOutput.balances[0].onHandKg.toString(),"40");
+  assert.equal(lots.find(l=>l.itemId===secondProduct && !l.isCarryover)!.balances[0].locationId,location);
+  assert.equal(lots.find(l=>l.itemId===secondProduct && !l.isCarryover)!.balances[0].onHandKg.toString(),"40");
+  const carried=lots.find(l=>l.isCarryover)!;
+  assert.equal(carried.itemId,secondProduct);
+  assert.equal(carried.balances[0].onHandKg.toString(),"10");
+  assert.notEqual(carried.balances[0].locationId,location);
+  assert.equal(lots.find(l=>l.itemId===waste)!.balances[0].locationId,location);
+  assert.equal(lots.find(l=>l.itemId===saleWaste)!.balances[0].locationId,salesLocation);
+});
