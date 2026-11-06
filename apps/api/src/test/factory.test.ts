@@ -2298,3 +2298,29 @@ test("completion sends products to chosen storage and keeps waste routing", asyn
   assert.equal(lots.find(l=>l.itemId===waste)!.balances[0].locationId,location);
   assert.equal(lots.find(l=>l.itemId===saleWaste)!.balances[0].locationId,salesLocation);
 });
+
+test("manual product intake adds selected warehouse stock with cost, no purchase or melt, and can be sold", async () => {
+  const itemId = (await post("/items", { name: `Opening product ${randomUUID()}`, kind: "PRODUCT" })).body.id;
+  const before = { purchases: await db.purchaseReceipt.count(), batches: await db.productionBatch.count() };
+  const payload = { itemId, locationId: salesLocation, quantityKg: "2,5", unitPricePerKg: "100", currency: "UZS" };
+  const key = randomUUID();
+  const receipt = (await post("/products/receive", payload, key)).body;
+  assert.deepEqual((await post("/products/receive", payload, key)).body, receipt);
+  assert.equal((await db.inventoryBalance.findUniqueOrThrow({ where: { lotId_locationId: { lotId: receipt.lotId, locationId: salesLocation } } })).onHandKg.toString(), "2.5");
+  assert.deepEqual(await new Costing(db).unit(receipt.lotId), { known: true, amounts: { UZS: "100" } });
+  assert.equal(await db.purchaseReceipt.count(), before.purchases);
+  assert.equal(await db.productionBatch.count(), before.batches);
+  await post("/products/receive", { ...payload, itemId: waste }, randomUUID(), 409);
+  await post("/products/receive", { ...payload, quantityKg: "0" }, randomUUID(), 409);
+  await post("/products/receive", { ...payload, quantityKg: "0.0001" }, randomUUID(), 400);
+  const eq = (await post("/equipment", { name: `Intake validation ${randomUUID()}`, direction: "COPPER" })).body.id;
+  const batch = (await post("/batches", { equipmentId: eq })).body;
+  await post("/products/receive", { ...payload, locationId: batch.wipLocationId }, randomUUID(), 409);
+  await post(`/batches/${batch.id}/cancel`, { reason: "End intake validation" });
+  const unknown = (await post("/products/receive", { itemId, locationId: location, quantityKg: "1.125", currency: "USD" })).body;
+  assert.deepEqual(await new Costing(db).unit(unknown.lotId), { known: false, amounts: {} });
+  await post(`/documents/${unknown.id}/reverse`, { reason: "Correct unused opening stock" });
+  assert.equal((await db.inventoryBalance.findUniqueOrThrow({ where: { lotId_locationId: { lotId: unknown.lotId, locationId: location } } })).onHandKg.toString(), "0");
+  await post("/sales", { customerName: `Opening stock buyer ${randomUUID()}`, itemId, quantityKg: "0.5", unitPricePerKg: "150", currency: "UZS" });
+  assert.equal((await db.inventoryBalance.findUniqueOrThrow({ where: { lotId_locationId: { lotId: receipt.lotId, locationId: salesLocation } } })).onHandKg.toString(), "2");
+});

@@ -86,6 +86,7 @@ const documentName = (v: string) =>
       PRODUCTION_COMPLETE: "Завершение плавки",
       WASTE_RECOVERY: "Переработка отходов",
       WASTE_INTAKE: "Приём отходов",
+      PRODUCT_INTAKE: "Приём готовой продукции",
       WASTE_DISPOSAL: "Списание отходов",
       WASTE_SALE: "Продажа отходов",
       SHIPMENT: "Отгрузка",
@@ -1561,6 +1562,21 @@ export function Workspace({
           <Ionicons name="chevron-forward" size={20} color={c.white} />
         </Pressable>
       )}
+      {section === "inventory" && <Btn secondary title="Принять готовую продукцию" disabled={disabled || busy || !!error}
+        onPress={() => setForm({
+          title: "Приём готовой продукции",
+          subtitle: "Внесите фактический остаток без создания плавки и закупки. Указанный вес добавится к остатку на выбранном складе. Если стоимость не указана, она останется неопределённой.",
+          fields: [
+            { ...opt("itemId", "Готовая продукция", options(rows("items").filter(item => item.kind === "PRODUCT" && item.isActive))), dropdown: true },
+            weight("quantityKg", "Вес готовой продукции"),
+            { ...opt("locationId", "Склад", options(rows("locations").filter(location => location.kind === "STORAGE"))), dropdown: true, value: rows("locations").find(location => location.name === stockWarehouse && location.kind === "STORAGE")?.id },
+            { key: "unitPricePerKg", label: "Себестоимость за кг (необязательно)", number: true, required: false },
+            { ...currencies, value: "UZS" },
+            { key: "notes", label: "Комментарий", required: false },
+          ],
+          allowDraft: true,
+          submit: (v, send) => send("/products/receive", { ...v, unitPricePerKg: v.unitPricePerKg?.trim() || undefined }),
+        })} />}
       {section === "inventory" && <Btn secondary title="Принять отход" disabled={disabled || busy || !!error}
         onPress={() => setForm({
           title: "Приём отходов",

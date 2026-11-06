@@ -107,7 +107,7 @@ class ItemDto extends NameDto {
   @IsOptional() @IsIn(["STORAGE", "SALE"]) wasteDisposition?: string;
   @IsIn(["PRODUCT", "WASTE"]) kind!: string;
 }
-class WasteIntakeDto {
+class StockIntakeDto {
   @IsUUID() itemId!: string;
   @IsUUID() locationId!: string;
   @Transform(({ value }) => typeof value === "string" ? value.trim().replace(",", ".") : value)
@@ -1115,20 +1115,32 @@ export class FactoryController {
     @Req() req: AuthRequest,
     @Headers("idempotency-key") id: string,
     @Headers("x-recovery-epoch") epoch: string,
-    @Body() dto: WasteIntakeDto,
+    @Body() dto: StockIntakeDto,
   ) {
-    return this.ops.command(req.actor.id, id, epoch, "WASTE_INTAKE", dto, async tx => {
+    return this.receiveStock(req, id, epoch, dto, "WASTE");
+  }
+  @Post("products/receive") receiveProduct(
+    @Req() req: AuthRequest,
+    @Headers("idempotency-key") id: string,
+    @Headers("x-recovery-epoch") epoch: string,
+    @Body() dto: StockIntakeDto,
+  ) {
+    return this.receiveStock(req, id, epoch, dto, "PRODUCT");
+  }
+  private receiveStock(req: AuthRequest, id: string, epoch: string, dto: StockIntakeDto, kind: "WASTE" | "PRODUCT") {
+    const type = kind === "WASTE" ? "WASTE_INTAKE" : "PRODUCT_INTAKE";
+    return this.ops.command(req.actor.id, id, epoch, type, dto, async tx => {
       const item = await tx.item.findUniqueOrThrow({ where: { id: dto.itemId } });
-      ensure(item.isActive && item.kind === "WASTE", "Выберите действующий вид отходов");
+      ensure(item.isActive && item.kind === kind, kind === "WASTE" ? "Выберите действующий вид отходов" : "Выберите действующую готовую продукцию");
       const site = await tx.site.findFirstOrThrow();
       const location = await tx.stockLocation.findUniqueOrThrow({ where: { id: dto.locationId }, include: { warehouse: true } });
-      ensure(location.kind === "STORAGE" && location.warehouse.siteId === site.id, "Выберите склад отходов");
+      ensure(location.kind === "STORAGE" && location.warehouse.siteId === site.id, "Выберите склад хранения");
       const quantity = kg(dto.quantityKg);
       const unitCost = dto.unitPricePerKg === undefined ? { known: false, amounts: {} } : { known: true, amounts: { [dto.currency]: decimal(dto.unitPricePerKg).toString() } };
-      await tx.businessDocument.create({ data: { id, commandId: id, type: "WASTE_INTAKE", reason: dto.notes?.trim() || "Приём отходов на склад" } });
+      await tx.businessDocument.create({ data: { id, commandId: id, type, reason: dto.notes?.trim() || (kind === "WASTE" ? "Приём отходов на склад" : "Приём готовой продукции на склад") } });
       const lot = await tx.stockLot.create({ data: { itemId: item.id, originDocumentId: id, openingUnitCost: unitCost } });
       await balancesLock(tx, [{ lotId: lot.id, locationId: location.id }]);
-      await movement(tx, id, lot.id, location.id, quantity, "WASTE_INTAKE");
+      await movement(tx, id, lot.id, location.id, quantity, type);
       return { id, lotId: lot.id, itemId: item.id, locationId: location.id, quantityKg: quantity };
     });
   }

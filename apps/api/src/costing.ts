@@ -54,7 +54,7 @@ export class Costing {
       },
     });
     let result: Valuation = { known: false, amounts: {} };
-    if (lot && ["MONTH_OPENING", "WASTE_INTAKE"].includes(lot.originDocument.type) && lot.openingUnitCost) {
+    if (lot && ["MONTH_OPENING", "WASTE_INTAKE", "PRODUCT_INTAKE"].includes(lot.originDocument.type) && lot.openingUnitCost) {
       result = lot.openingUnitCost as unknown as Valuation;
     } else if (lot?.purchaseLot) {
       const line = effectivePurchase(lot.purchaseLot.line);
